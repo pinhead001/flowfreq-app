@@ -106,6 +106,31 @@ class TestPilfOverrideWiring:
         source = pathlib.Path(app_module.__file__).read_text()
         assert source.count("low_outlier_threshold_override=pilf_override or None") == 2
 
+    def test_year_boxes_reset_when_a_new_gage_is_downloaded(self, app_module):
+        """A stored widget key outlives the gage it was chosen for.
+
+        Streamlit lets a value stored under `key=` win over the `value=`
+        default on every render after the first, so the FFA year boxes carry
+        one gage's range into the next. Downloading 12363000 (record from 1922)
+        after 09355500 left them reading 1955-2013: the download fit the full
+        record and reported Q100 120,106, while the boxes claimed a range that,
+        on the next Update Plots, silently refit a subset nobody selected.
+
+        Both keys must be dropped in the download handler, before the widgets
+        are rebuilt, or the boxes and the displayed fit disagree.
+        """
+        source = pathlib.Path(app_module.__file__).read_text()
+        start = source.index("if download_data and gage_list:")
+        block = source[start : start + 1600]
+        assert 'st.session_state.pop("peak_start_year", None)' in block
+        assert 'st.session_state.pop("peak_end_year", None)' in block
+
+    def test_refit_trigger_is_cleared_for_the_new_gage(self, app_module):
+        """Stale prev_ffa_inputs would suppress the first refit after download."""
+        source = pathlib.Path(app_module.__file__).read_text()
+        start = source.index("if download_data and gage_list:")
+        assert "st.session_state.prev_ffa_inputs = None" in source[start : start + 1600]
+
     def test_override_participates_in_the_refit_trigger(self, app_module):
         """Changing it without refitting would leave the curve silently stale."""
         source = pathlib.Path(app_module.__file__).read_text()

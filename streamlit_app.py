@@ -416,6 +416,21 @@ if download_data and gage_list:
     st.session_state.peak_data = {}
     st.session_state.ffa_results = {}
 
+    # The FFA year boxes are created with `key=`, and Streamlit lets a stored
+    # key win over the `value=` default on every render after the first. Left
+    # alone they carry the previous gage's range into the next one: Download
+    # fits the new gage's full record, the boxes still read the old years, and
+    # the first Update Plots silently refits a subset the user never chose.
+    # That is how 12363000 (record from 1922) came up showing 1955-2013
+    # inherited from 09355500 and then changed its Q100 on an Update Plots that
+    # should have been a no-op. Dropping the keys makes both widgets
+    # re-initialise from the new record's own min and max.
+    st.session_state.pop("peak_start_year", None)
+    st.session_state.pop("peak_end_year", None)
+    # The refit trigger compares against the previous inputs; those belonged to
+    # the old gage and mean nothing now.
+    st.session_state.prev_ffa_inputs = None
+
     progress_bar = st.progress(0)
     status_text = st.empty()
 
