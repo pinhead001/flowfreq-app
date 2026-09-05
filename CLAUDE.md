@@ -63,7 +63,13 @@ match. `tests/__init__.py` is load-bearing for the same reason — because `test
 package, pytest puts the repository root on `sys.path`, which is what resolves both
 `tests.fixtures` and the flat `ffa_runner`. Deleting it passes locally and fails in CI.
 
-Python 3.10 or newer; Streamlit sets that floor.
+Python 3.10 or newer; Streamlit sets that floor. The app itself is developed,
+tested and deployed on **3.12**, pinned in `.python-version` — CI reads that file rather
+than carrying its own literal, and `uv venv` reads it too, so a local environment matches
+CI without anyone having to remember. Without it uv falls back to its own default and a
+developer can silently end up on a different interpreter. Streamlit Community Cloud's
+version is configured in the app's settings, not from this repository; it has to be kept
+in step by hand.
 
 ## Conventions
 
