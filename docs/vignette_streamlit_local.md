@@ -1,94 +1,73 @@
-# Vignette: Run the Streamlit App Locally
+# Vignette: Run the app locally
 
-The FlowFreq Streamlit app (`app/streamlit_app.py`) provides an interactive browser-based interface for downloading USGS streamflow data, running Bulletin 17C analysis, and exporting results.
+The FlowFreq Streamlit app (`streamlit_app.py`) is a browser-based interface for downloading
+USGS streamflow data, running Bulletin 17C analysis, and exporting results.
 
 ## 1. Install
 
+Python 3.10 or newer — Streamlit sets that floor.
+
 ```bash
-# From the repo root
-cd /path/to/flowfreq
+git clone https://github.com/pinhead001/flowfreq-app
+cd flowfreq-app
 
 python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 
-pip install -e ".[dev]"
-pip install streamlit
+pip install -r requirements.txt
 ```
 
-Verify:
+That installs Streamlit and, from a pinned git tag, the
+[flowfreq](https://github.com/pinhead001/flowfreq) analysis library. Verify:
+
 ```bash
-python -c "import streamlit, flowfreq; print('ready')"
+python -c "import streamlit, flowfreq; print('ready', flowfreq.__version__)"
 ```
 
 ## 2. Run
 
-**Always run from the repo root** — the app uses relative imports (`from app.ffa_runner import ...`):
-
 ```bash
-cd /path/to/flowfreq
-streamlit run app/streamlit_app.py
+streamlit run streamlit_app.py
 ```
 
-The browser opens automatically at `http://localhost:8501`.
+Or `make run`. Opens at <http://localhost:8501>.
 
-To specify a port:
+The app's modules sit at the repository root, and Streamlit puts the script's own directory
+on `sys.path`, so the imports resolve wherever you invoke it from — there is no
+run-from-the-repo-root requirement.
+
 ```bash
-streamlit run app/streamlit_app.py --server.port 8502
+# A different port, if 8501 is busy
+streamlit run streamlit_app.py --server.port 8502
 ```
 
-## 3. Using the App
+## 3. Using it
 
-### Daily Flow Mode (default)
-
-1. **Input Mode** — choose Single Gage or Multiple Gages
-2. Enter a USGS gage number (e.g., `03606500` for Big Sandy River, TN)
-3. **Plot Options** — check Daily Time Series, Summary Hydrograph, Flow Duration Curve
-4. Click **Download Data** — fetches from NWIS, generates plots
-5. Use the **Plot Date Range** sliders to filter the plotted period without re-downloading
-6. Click **Update Plots** to redraw
-
-### Flood Frequency Analysis
-
-1. Check **Enable Flood Frequency Analysis** in the sidebar
-2. Set **Regional Skew** (default −0.302, nationwide B17C mean) and **Regional Skew SE** (default 0.55)
-3. **Skew Options** — check any combination of:
-   - **Station Skew** — raw skew estimated from the data
-   - **Weighted Skew** *(default)* — B17C weighted combination of station + regional
-   - **Regional Skew** — applies the regional value directly
-4. Check **Frequency Curve** to display the LP3 plot
-5. Click **Download Data** — downloads peak flows and runs EMA analysis
-6. View results in the **Flood Frequency Results** expander below each gage:
-   - Convergence badge (EMA Converged / MOM Fallback)
-   - LP3 Parameters table (μ, σ, skews)
-   - One frequency table per selected skew (RI 1.5–500 yr with 90% CI)
-
-### Multi-Gage Mode
-
-Enter multiple gage numbers (one per line), enable FFA, and a **Flood Frequency Comparison** table appears comparing 100-yr flows across all gages.
-
-### Export
-
-1. Sidebar → **Export** section → select gages
-2. Click **Download ZIP** — file contains per-gage subdirectories:
-   ```
-   03606500/
-     daily_flow.csv
-     daily_timeseries.png
-     summary_hydrograph.png
-     flow_duration_curve.png
-     frequency_curve.png         (if FFA enabled)
-     frequency_table.csv         (9 return intervals)
-     lp3_parameters.csv
-   comparison_summary.csv        (multi-gage only)
-   ```
+1. Enter a USGS site number (e.g. `03606500`, Big Sandy River at Bruceton, TN)
+2. Set the regional skew and its standard error, or accept the B17C nationwide defaults
+3. Download the peak-flow record
+4. Run the analysis — EMA, falling back to Method of Moments if it does not converge
+5. Compare station, weighted and regional skew curves
+6. Export a ZIP of plots, frequency tables and fitted LP3 parameters
 
 ## 4. Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `ModuleNotFoundError: flowfreq` | Run from repo root; ensure venv is active |
-| `ModuleNotFoundError: app.ffa_runner` | Run `streamlit run app/streamlit_app.py` from repo root, not from inside `app/` |
-| Port already in use | `streamlit run app/streamlit_app.py --server.port 8502` |
-| Blank page / no data | Check NWIS connectivity; some gages have restricted peak data |
-| EMA did not converge | Short records (<10 peaks) trigger MOM fallback automatically |
+| `ModuleNotFoundError: flowfreq` | The venv is not active, or `pip install -r requirements.txt` did not complete |
+| `ModuleNotFoundError: ffa_runner` | You moved `streamlit_app.py` away from its siblings; they must stay in one directory |
+| Pinned tag fails to install | Check the tag exists: `git ls-remote --tags https://github.com/pinhead001/flowfreq` |
+| Port already in use | `streamlit run streamlit_app.py --server.port 8502` |
+| An app call fails after bumping the pin | A `flowfreq` signature changed; `make test` reproduces it — that is what the import smoke test is for |
+
+## 5. Updating the analysis library
+
+`requirements.txt` pins a tag rather than tracking `main`, so a library change reaches this
+app only when you bump it:
+
+```
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.3.0
+```
+
+Land the change in `flowfreq`, tag a release there, bump that line, then run `make test`
+before deploying.

@@ -1,103 +1,18 @@
-[build-system]
-requires = ["setuptools>=45", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "flowfreq"
-version = "0.2.0"
-description = "Python library for hydrologic analysis with Bulletin 17C flood frequency"
-readme = "README.md"
-authors = [{name = "pinhead001", email = "pinhead001@github.com"}]
-license = {text = "MIT"}
-requires-python = ">=3.9"
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Science/Research",
-    "Topic :: Scientific/Engineering :: Hydrology",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-]
-keywords = ["hydrology", "flood-frequency", "bulletin-17c", "usgs", "streamflow"]
-dependencies = [
-    "numpy>=1.20.0",
-    "pandas>=1.3.0",
-    "matplotlib>=3.4.0",
-    "scipy>=1.7.0",
-    "requests>=2.25.0",
-    "click>=8.0",
-    "pyarrow>=10.0",
-    # Pure Python, no compiled extension. flowfreq._p3_moments needs it for
-    # the var_mom port's truncated-moment computation: at-site skew near
-    # zero (the common case) makes the Pearson III shape parameter
-    # alpha = 4/skew**2 large enough (Big Sandy: ~9e4) that float64 loses
-    # the moment computation to cancellation. See _GAMMA_MOMENT_DPS there.
-    "mpmath>=1.2",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0,<8",
-    "pytest-cov>=4.0,<5",
-    "black>=24.0,<25",
-    "isort>=5.12,<6",
-    "flake8>=6.0,<7",
-    "bump2version>=1.0.0,<2",
-]
-
-[project.scripts]
-flowfreq = "flowfreq.cli:cli"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["flowfreq*"]
-
-[tool.setuptools.package-data]
-# py.typed is the PEP 561 marker. Without it a downstream type checker ignores
-# every annotation in this package, so the type hints are invisible to the
-# people they exist for.
-#
-# The gage table used to be shipped as "../data/*.csv" from a top-level data/
-# directory, a package-data entry reaching outside the package it belongs to.
-# It happened to work; it is not contractual, and it forced data* into
-# packages.find above. The file now lives in flowfreq/data/ where it is
-# addressed normally.
-"flowfreq" = ["data/*.csv", "py.typed"]
-# Benchmark cases must ship with the package: flowfreq benchmark used to read
-# them out of tests/, which is not packaged, so the command failed for every
-# installed user.
-"flowfreq.validation" = ["data/*.json"]
+# The app is a deployed Streamlit script, not a distribution, so there is no
+# [project] table and nothing to build. This file exists to hold the lint and
+# test configuration, so black/isort settings cannot drift from the flowfreq
+# library's and a file moved between the two repos formats identically.
 
 [tool.black]
 line-length = 100
-target-version = ['py39', 'py310', 'py311', 'py312']
+target-version = ['py310', 'py311', 'py312']
 
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["flowfreq"]
+known_first_party = ["ffa_runner", "ffa_export", "streamlit_app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-# The default selection IS the CI selection, so a bare `pytest` is correct on
-# every platform with nothing to remember and no `make` required. Override from
-# the CLI when you want the excluded tests: `-m ""` runs everything,
-# `-m requires_network` runs only those. A later -m always wins.
-#
-# requires_peakfqr_testdata is deliberately NOT excluded: the reference data is
-# vendored at vendor/peakfqr/inst/testdata, those tests pass, and
-# tests/fixtures/paths.py skips them cleanly if it is ever absent.
-#
-# requires_peakfqsa is gone with flowfreq/peakfqsa: the marker gated two empty
-# stub classes, so `pytest -m requires_peakfqsa` collected zero tests and both
-# the marker and its exclusion were dead config.
-addopts = "-v -m 'not requires_network'"
-markers = [
-    "requires_network: marks tests that contact live NWIS services (deselect with '-m \"not requires_network\"')",
-    "requires_fortran: marks tests needing the f2py Fortran extension (auto-skipped when absent; build with python build_fortran/build.py)",
-    "requires_peakfqr_testdata: marks tests needing the peakfqr reference test data, searched under vendor/peakfqr then ../_shared/peakfqr; auto-skipped when absent, see docs/FORTRAN_UPLOAD.md",
-]
+addopts = "-v"

@@ -1,18 +1,13 @@
-"""Tests for app.ffa_export module."""
+"""Tests for ffa_export module."""
 
 import io
-import sys
 import zipfile
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-# Ensure app package is importable
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from app.ffa_export import export_comparison_csv, export_ffa_to_zip
+from ffa_export import export_comparison_csv, export_ffa_to_zip
 
 
 @pytest.fixture

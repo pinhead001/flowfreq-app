@@ -1,4 +1,4 @@
-"""Import smoke test for ``app/streamlit_app.py``.
+"""Import smoke test for ``streamlit_app.py``.
 
 The app is a top-level script, not a module with a ``main()``: importing it
 executes the entire body -- every widget call, every ``st.session_state``
@@ -34,7 +34,7 @@ pytest.importorskip(
 # dozens. Expected in bare mode, and it would bury a real failure in the log.
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
 
-# Names the app pulls out of flowfreq and app.ffa_*. If one of these stops
+# Names the app pulls out of flowfreq and ffa_*. If one of these stops
 # resolving, the app is broken for every user even though flowfreq's own tests
 # are green -- which is exactly the failure this module exists to catch.
 WIRED_CALLABLES = (
@@ -54,17 +54,17 @@ WIRED_CALLABLES = (
 @pytest.fixture(scope="module")
 def app_module():
     """The imported app. Importing it *is* the smoke test; assertions follow."""
-    return importlib.import_module("app.streamlit_app")
+    return importlib.import_module("streamlit_app")
 
 
 def test_app_imports(app_module):
-    assert app_module.__name__ == "app.streamlit_app"
+    assert app_module.__name__ == "streamlit_app"
 
 
 @pytest.mark.parametrize("name", WIRED_CALLABLES)
 def test_wired_entry_point_resolves(app_module, name):
     attr = getattr(app_module, name, None)
-    assert attr is not None, f"app/streamlit_app.py no longer exposes {name}"
+    assert attr is not None, f"streamlit_app.py no longer exposes {name}"
     assert callable(attr), f"{name} is not callable"
 
 

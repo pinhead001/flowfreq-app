@@ -1,19 +1,13 @@
-"""Tests for app.ffa_runner -- display formatting only.
+"""Tests for ffa_runner -- display formatting only.
 
 The analysis these tables render moved to :mod:`flowfreq.workflow`; its tests
 live in ``tests/test_workflow.py``. Nothing here calls into the library, which
 is the point: this module must stay renderable without an analysis run.
 """
 
-import sys
-from pathlib import Path
-
 import pandas as pd
 
-# Ensure app package is importable
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from app.ffa_runner import format_parameters_df, format_quantile_df
+from ffa_runner import format_parameters_df, format_quantile_df
 
 
 class TestFormatParametersDf:

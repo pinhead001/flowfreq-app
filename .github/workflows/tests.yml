@@ -6,101 +6,29 @@ on:
   pull_request:
     branches: [main]
 
-# lint and test are independent on purpose. They used to be chained with
-# `needs: lint`, which meant a formatting failure stopped the suite from
-# running at all -- and that is how a ModuleNotFoundError across five test
-# modules went unnoticed from February to August 2026. A style nit must never
-# be able to hide a broken build.
+# One job, not the library's three: there is no Fortran toolchain to provision
+# and no version matrix to cover, because Streamlit requires Python >= 3.10 and
+# the app is deployed on a single interpreter.
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'   # Streamlit needs >= 3.10
 
-      # The dev extra, not a bare `pip install black isort`. This job used to
-      # install the linters unpinned, so it ran black 26 while pyproject pins
-      # black<25 and every other job installs the pins -- code formatted to
-      # the declared contract was then rejected by CI, and code CI accepted
-      # failed for anyone who had installed .[dev]. The comment below claimed
-      # the two could not drift; installing different versions is exactly how
-      # they drifted.
-      - name: Install linters
-        run: pip install -e ".[dev]"
+      # Installs flowfreq from the pinned tag, so CI performs the same
+      # resolution Streamlit Cloud does on deploy. A broken pin fails here
+      # rather than in production.
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install "black>=24.0,<25" "isort>=5.12,<6" "pytest>=7.0,<8"
 
-      # Same target, and now the same versions, as a developer who installed
-      # the dev extra.
+      # Same targets a developer runs, so the two cannot drift.
       - name: Lint
         run: make lint
 
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.9', '3.10', '3.11', '3.12']
-
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install
-        run: pip install -e ".[dev]"
-
-      # No marker flags here: the default selection lives in pyproject.toml's
-      # addopts, so this runs exactly what a developer's bare `pytest` runs.
       - name: Test
-        run: pytest tests/
-
-  # app/ had no tests and was not linted, so a Streamlit change could not be
-  # reviewed with any confidence -- and that is why dev's app work was left
-  # unported. Lint now covers app/ through PKGS in the Makefile; this job adds
-  # the missing execution. It is separate from the matrix because Streamlit
-  # requires Python >= 3.10 and the matrix still covers 3.9.
-  app:
-    name: Streamlit app
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install
-        run: pip install -e ".[dev]" -r app/requirements.txt
-
-      # Same target a developer runs, so the two cannot drift.
-      - name: Smoke-test the app
-        run: make smoke
-
-  # tests/fortran_parity/test_live_vs_golden.py is the only thing standing
-  # between a golden file and silent drift from vendor/peakfqr. It needs the
-  # f2py extension, no other job has a Fortran toolchain, so until now it
-  # skipped everywhere in CI and drift would surface months later on whichever
-  # machine happened to have gfortran. This job gives it one.
-  fortran:
-    name: Fortran parity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install gfortran
-        run: sudo apt-get update && sudo apt-get install -y gfortran
-
-      # meson and ninja are the f2py build backend, not runtime dependencies,
-      # so they are installed here rather than added to the dev extra.
-      - name: Install
-        run: pip install -e ".[dev]" meson ninja
-
-      # Same target a developer runs, so the two cannot drift. It builds, then
-      # asserts the extension imports before running the parity tests -- without
-      # that assertion a failed build would merely skip them and report green.
-      - name: Build and check parity
-        run: make parity
+        run: make test

@@ -19,17 +19,15 @@ from scipy import stats
 
 matplotlib.use("Agg")  # Use non-interactive backend
 
-# Add parent directory to path for flowfreq import (needed for Streamlit Cloud)
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from app.ffa_export import export_comparison_csv, export_ffa_to_zip
-from app.ffa_runner import format_parameters_df, format_quantile_df
-
-# Import flowfreq
-from flowfreq import Hydrograph, __version__
 from flowfreq.freq_plot import plot_frequency_curve_streamlit
 from flowfreq.usgs import USGSgage
 from flowfreq.workflow import SKEW_OPTIONS, build_skew_curves_dict, compute_skew_tables, run_ffa
+
+from ffa_export import export_comparison_csv, export_ffa_to_zip
+from ffa_runner import format_parameters_df, format_quantile_df
+
+# Import flowfreq
+from flowfreq import Hydrograph, __version__
 
 st.set_page_config(
     page_title="USGS Hydrograph-erator",
