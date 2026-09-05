@@ -11,6 +11,13 @@ target-version = ['py310', 'py311', 'py312']
 profile = "black"
 line_length = 100
 known_first_party = ["ffa_runner", "ffa_export", "streamlit_app"]
+# flowfreq is an installed dependency, never local source. Declared explicitly
+# because isort otherwise infers placement from what it finds on disk: a stray
+# flowfreq/ directory in the tree -- leftover __pycache__ from before the split,
+# say, or a sibling checkout of the library -- silently reclassifies it as
+# first-party, and the file then passes `isort --check` locally while failing in
+# CI's clean checkout. That exact divergence cost a red build here.
+known_third_party = ["flowfreq"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
