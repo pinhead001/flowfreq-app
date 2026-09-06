@@ -4,10 +4,22 @@
 PYTHON ?= python
 PKGS := . tests/
 
+PYTEST := $(PYTHON) -m pytest
+
+# Both of these are set with target-specific `export` rather than inline as
+# `VAR=1 command`, which is shell syntax cmd.exe does not understand -- make
+# itself puts them in the recipe's environment, so the Makefile works on
+# Windows as well as Unix.
+#
 # PYTHONSAFEPATH=1 stops Python prepending the working directory to sys.path,
 # which is what the `pytest` console script does and `python -m pytest` does
 # not. Without it a local run can pass while CI fails on imports.
-PYTEST := PYTHONSAFEPATH=1 $(PYTHON) -m pytest
+#
+# PYTHONUTF8=1 makes Python use UTF-8 regardless of the platform's locale.
+# streamlit_app.py contains a non-ASCII character, and on a Windows console
+# isort cannot encode it to cp1252 -- it then reports "Unable to parse file"
+# and *skips the file*, so `isort --check` passes without having checked the
+# one file that matters. Linux CI defaults to UTF-8 and never sees it.
 
 .DEFAULT_GOAL := help
 .PHONY: help check lint fmt test clean clean-verify run
@@ -17,16 +29,19 @@ help:  ## Show this help
 
 check: lint test  ## Everything CI checks, in CI's order
 
+lint: export PYTHONUTF8 := 1
 lint:  ## Formatting check (does not modify files)
 	$(PYTHON) -m black --check --diff $(PKGS)
 	$(PYTHON) -m isort --check-only --diff $(PKGS)
 
+fmt: export PYTHONUTF8 := 1
 fmt:  ## Apply formatting
 	$(PYTHON) -m black $(PKGS)
 	$(PYTHON) -m isort $(PKGS)
 
 # Importing streamlit_app.py executes the whole script in Streamlit's bare
 # mode, so this exercises the app end to end short of a button press.
+test: export PYTHONSAFEPATH := 1
 test:  ## Run the suite as CI does
 	$(PYTEST) tests/
 

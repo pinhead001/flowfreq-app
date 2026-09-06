@@ -1,0 +1,10 @@
+# Development tooling, pinned. Runtime dependencies are in requirements.txt.
+#
+# These bounds are not decoration. black's formatting changes between major
+# versions: black 26 reformats streamlit_app.py's footer that black 24 leaves
+# alone, so a developer who installs black unpinned "fixes" a file that was
+# already correct and turns CI red. CI installs this same file, so there is one
+# place to change a pin and no way for local and CI to disagree.
+black>=24.0,<25
+isort>=5.12,<6
+pytest>=7.0,<8

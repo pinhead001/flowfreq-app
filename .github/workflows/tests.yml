@@ -29,10 +29,14 @@ jobs:
       # Installs flowfreq from the pinned tag, so CI performs the same
       # resolution Streamlit Cloud does on deploy. A broken pin fails here
       # rather than in production.
+      # Both files, and no inline pins: requirements-dev.txt is what a
+      # developer installs too, so the linter versions here and on a
+      # workstation cannot drift. They previously lived only in this file,
+      # which is how a local black 26 came to disagree with CI's black 24.
       - name: Install
         run: |
           pip install -r requirements.txt
-          pip install "black>=24.0,<25" "isort>=5.12,<6" "pytest>=7.0,<8"
+          pip install -r requirements-dev.txt
 
       # Same targets a developer runs, so the two cannot drift.
       - name: Lint
