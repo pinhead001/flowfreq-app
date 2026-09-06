@@ -21,7 +21,7 @@ matplotlib.use("Agg")  # Use non-interactive backend
 
 # Import flowfreq
 from flowfreq import Hydrograph, __version__
-from flowfreq.freq_plot import plot_frequency_curve_streamlit
+from flowfreq.freq_plot import plot_frequency_curve
 from flowfreq.usgs import USGSgage
 from flowfreq.workflow import SKEW_OPTIONS, build_skew_curves_dict, compute_skew_tables, run_ffa
 
@@ -772,7 +772,7 @@ if st.session_state.gage_data:
                                 else None
                             )
                             max_flow_label = {"flow": max_flow, "year": max_year, "ri": ri}
-                freq_fig = plot_frequency_curve_streamlit(
+                freq_fig = plot_frequency_curve(
                     ffa_result["b17c"],
                     site_name=gage_info.get("name", ""),
                     site_no=site_no,
@@ -980,7 +980,7 @@ if st.session_state.gage_data:
                                             "year": max_year,
                                             "ri": ri,
                                         }
-                            freq_fig_for_export = plot_frequency_curve_streamlit(
+                            freq_fig_for_export = plot_frequency_curve(
                                 ffa_result["b17c"],
                                 site_name=gage_info.get("name", ""),
                                 site_no=site_no,

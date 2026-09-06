@@ -45,7 +45,7 @@ WIRED_CALLABLES = (
     "compute_skew_tables",
     "export_comparison_csv",
     "export_ffa_to_zip",
-    "plot_frequency_curve_streamlit",
+    "plot_frequency_curve",
     "USGSgage",
     "Hydrograph",
 )
