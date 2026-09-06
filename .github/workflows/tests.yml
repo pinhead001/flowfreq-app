@@ -14,9 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The interpreter comes from .python-version, the one place it is
+      # declared. uv reads that same file when it creates a local venv, so a
+      # developer's environment matches CI without anyone having to remember a
+      # number; without the file uv falls back to its own default and can put
+      # someone on a different interpreter silently. Streamlit itself only
+      # requires >= 3.10 -- 3.12 is what this app is developed and tested on.
+      # Streamlit Community Cloud's version is set in the app's own settings,
+      # not from this repository, and has to be kept in step by hand.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'   # Streamlit needs >= 3.10
+          python-version-file: .python-version
 
       # Installs flowfreq from the pinned tag, so CI performs the same
       # resolution Streamlit Cloud does on deploy. A broken pin fails here
