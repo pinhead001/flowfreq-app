@@ -49,13 +49,30 @@ on a transitive dependency.
 
 ```bash
 pip install -r requirements.txt
-pip install black isort pytest
+pip install -r requirements-dev.txt   # pinned; see below
 
 make check     # what CI runs: lint then test
 make test      # importing streamlit_app.py runs the whole script in Streamlit's bare mode
 make run       # serve locally at http://localhost:8501
 make fmt       # apply black + isort
 ```
+
+**Install the dev tooling from `requirements-dev.txt`, not by name.** This line used to
+read `pip install black isort pytest`, and following it gets you whatever black is current
+-- black 26 reformats `streamlit_app.py`'s footer that black 24, which CI pins, leaves
+alone. You then "fix" a correctly formatted file and turn CI red. CI installs the same
+file, so the pins cannot drift.
+
+**On Windows.** Three things differ, all handled by the Makefile so `make check` behaves
+the same as on Linux -- worth knowing if you run the tools directly:
+
+- `make` is not installed by default (`winget install ezwinports.make`), and its recipes
+  run through `cmd.exe`, which cannot parse Unix inline env-var syntax. Both variables
+  below are therefore set with target-specific `export`, which make applies itself.
+- `PYTHONUTF8=1` is required for `lint` and `fmt`. `streamlit_app.py` has a non-ASCII
+  character; without UTF-8 mode isort cannot encode it to cp1252, reports "Unable to parse
+  file", and **skips the file** -- `isort --check` then passes without having checked it.
+- `PYTHONSAFEPATH=1` is required for `test`, for the `sys.path` reason described below.
 
 **Reproduce CI faithfully.** `python -m pytest` puts the working directory on `sys.path`;
 CI runs the `pytest` console script, which does not. `make test` sets `PYTHONSAFEPATH=1` to
