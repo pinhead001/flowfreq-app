@@ -63,15 +63,32 @@ read `pip install black isort pytest`, and following it gets you whatever black 
 alone. You then "fix" a correctly formatted file and turn CI red. CI installs the same
 file, so the pins cannot drift.
 
-**On Windows.** Three things differ, all handled by the Makefile so `make check` behaves
-the same as on Linux -- worth knowing if you run the tools directly:
+**On Windows.** Four things differ. The last three are handled by the Makefile, so
+`make check` behaves the same as on Linux -- they are worth knowing if you run the tools
+directly. The first is on you every time.
 
+- **Run make with the virtualenv on PATH** -- `uv run make check`, or activate first with
+  `.venv\Scripts\activate`. The Makefile invokes `python`, and a bare `python` in `cmd.exe`
+  resolves to the Microsoft Store shim rather than `.venv\Scripts\python.exe` when nothing
+  has put the venv on PATH. The failure does not say so; it reads
+
+  ```
+  C:\Users\...\WindowsApps\PythonSoftwareFoundation.Python.3.12_...\python.exe: No module named black
+  ```
+
+  which looks like a missing package and is really the wrong interpreter -- you can install
+  black as many times as you like and it will not help. Passing
+  `PYTHON=.venv\Scripts\python.exe` is not a substitute: it fixes `lint`, `test` and `fmt`,
+  but `run` invokes a bare `streamlit`, which still will not resolve.
 - `make` is not installed by default (`winget install ezwinports.make`), and its recipes
   run through `cmd.exe`, which cannot parse Unix inline env-var syntax. Both variables
   below are therefore set with target-specific `export`, which make applies itself.
 - `PYTHONUTF8=1` is required for `lint` and `fmt`. `streamlit_app.py` has a non-ASCII
   character; without UTF-8 mode isort cannot encode it to cp1252, reports "Unable to parse
   file", and **skips the file** -- `isort --check` then passes without having checked it.
+  (`Skipped 2 files` in isort's output is unrelated and appears either way: that is its
+  default skip list catching `.venv` and similar. The signal to watch for is the "Unable to
+  parse" warning, not the count.)
 - `PYTHONSAFEPATH=1` is required for `test`, for the `sys.path` reason described below.
 
 **Reproduce CI faithfully.** `python -m pytest` puts the working directory on `sys.path`;
