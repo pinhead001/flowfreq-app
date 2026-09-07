@@ -21,7 +21,7 @@ matplotlib.use("Agg")  # Use non-interactive backend
 
 # Import flowfreq
 from flowfreq import Hydrograph, __version__
-from flowfreq.freq_plot import plot_frequency_curve
+from flowfreq.freq_plot import plot_frequency_curve, plot_peak_flows_with_thresholds
 from flowfreq.usgs import USGSgage
 from flowfreq.workflow import SKEW_OPTIONS, build_skew_curves_dict, compute_skew_tables, run_ffa
 
@@ -243,110 +243,11 @@ def estimate_ri_from_lp3(flow, mean_log, std_log, skew):
     return None
 
 
-def plot_peak_timeseries(
-    peak_df,
-    site_name,
-    site_no,
-    yscale="linear",
-    quantiles=None,
-    max_ri_info=None,
-    pilf_threshold=None,
-    pilf_source=None,
-):
-    """Plot annual peak flows with optional quantile reference lines.
-
-    quantiles: dict of {return_period: flow_value} to draw as horizontal lines
-    pilf_threshold: low-outlier cut in cfs; peaks below it are drawn hollow
-    pilf_source: where that cut came from, for the legend ("MGBT"/"override")
-    """
-    fig, ax = plt.subplots(figsize=(10, 4))
-
-    years = peak_df["water_year"].values
-    flows = peak_df["peak_flow_cfs"].values
-    # Peaks below the PILF cut are censored out of the fit. Drawing them hollow
-    # is the whole point of exposing the override: without it the control
-    # changes numbers in a table and nothing a user can see on the record.
-    censored = (
-        np.asarray(flows) < pilf_threshold if pilf_threshold else np.zeros(len(flows), dtype=bool)
-    )
-    if censored.any():
-        ax.bar(
-            years[~censored],
-            flows[~censored],
-            color="steelblue",
-            alpha=0.7,
-            label="Peak used in fit",
-        )
-        ax.bar(
-            years[censored],
-            flows[censored],
-            facecolor="none",
-            edgecolor="steelblue",
-            linewidth=0.8,
-            alpha=0.7,
-            label=f"Low outlier, censored ({int(censored.sum())})",
-        )
-        ax.axhline(
-            pilf_threshold,
-            color="red",
-            linestyle="-",
-            linewidth=1.2,
-            alpha=0.8,
-            label=f"PILF threshold {pilf_threshold:,.0f} cfs ({pilf_source or 'MGBT'})",
-        )
-        ax.legend(fontsize=8, loc="upper left")
-    else:
-        ax.bar(years, flows, color="steelblue", alpha=0.7)
-
-    # Add quantile lines with labels above
-    if quantiles:
-        x_min = peak_df["water_year"].min()
-        for rp, flow in sorted(quantiles.items()):
-            ax.axhline(y=flow, linestyle="--", color="#404040", alpha=0.9)
-            rp_str = f"{rp:g}"  # Format without trailing zeros
-            ax.text(
-                x_min,
-                flow,
-                f" {rp_str}-yr: {flow:,.0f}",
-                va="bottom",
-                ha="left",
-                fontsize=8,
-                color="#404040",
-            )
-
-    # Add max RI annotation if provided
-    if max_ri_info:
-        max_flow = max_ri_info.get("flow")
-        max_year = max_ri_info.get("year")
-        max_ri = max_ri_info.get("ri")
-        if max_flow and max_year and max_ri:
-            ri_str = f"{max_ri:,.0f}" if max_ri >= 10 else f"{max_ri:.1f}"
-            annot_text = f"{max_flow:,.0f} cfs\n≈ {ri_str}-yr"
-            ax.annotate(
-                annot_text,
-                xy=(max_year, max_flow),
-                xytext=(10, -15),
-                textcoords="offset points",
-                fontsize=8,
-                ha="left",
-                va="top",
-                bbox=dict(
-                    boxstyle="round,pad=0.2", facecolor="white", edgecolor="lightgray", alpha=0.9
-                ),
-            )
-
-    ax.set_yscale(yscale)
-    ax.set_xlabel("Water Year")
-    ax.set_ylabel("Peak Flow (cfs)")
-    title = "Annual Peak Flows"
-    if site_name and site_no:
-        title = f"Annual Peak Flows\nUSGS {site_no} - {site_name}"
-    elif site_no:
-        title = f"Annual Peak Flows - USGS {site_no}"
-    ax.set_title(title, fontsize=12, fontweight="bold")
-    ax.grid(True, alpha=0.3, axis="y")
-    plt.tight_layout()
-    return fig
+#: plot_peak_timeseries used to live here. Its four features (return-period
+#: lines, max-peak recurrence annotation, PILF/MGBT hollow-bar censoring, and
+#: a user-selectable linear/log y-axis) are now all on
+#: flowfreq.freq_plot.plot_peak_flows_with_thresholds (TODO.md); the call
+#: site below uses that directly.
 
 
 def generate_plots(
@@ -678,34 +579,35 @@ if st.session_state.gage_data:
                 if len(peak_df) == 0:
                     st.warning(f"No peak data for {site_no} in selected year range")
                 else:
-                    # Build quantiles dict from FFA results if available
-                    quantiles = None
-                    if show_quantile_lines and site_no in st.session_state.ffa_results:
-                        ffa = st.session_state.ffa_results[site_no]
-                        if not ffa.get("error") and "quantile_df" in ffa:
-                            qdf = ffa["quantile_df"]
-                            quantiles = {
-                                float(row["Return Interval (yr)"]): row["Flow (cfs)"]
-                                for _, row in qdf.iterrows()
-                                if float(row["Return Interval (yr)"]) in show_quantile_lines
-                            }
-                    # Calculate max RI info if enabled
-                    max_ri_info = None
-                    if show_max_ri and site_no in st.session_state.ffa_results:
+                    # lp3_params drives both the return-period reference lines
+                    # and the max-peak annotation, since both derive from the
+                    # same fitted LP3 moments (mean_log/std_log/skew_weighted)
+                    # -- only build it when at least one of the two is wanted
+                    # and a real fit is available.
+                    lp3_params = None
+                    return_periods = (
+                        tuple(show_quantile_lines)
+                        if show_quantile_lines
+                        else (
+                            2,
+                            5,
+                            10,
+                            25,
+                            50,
+                            100,
+                        )
+                    )
+                    if (
+                        show_quantile_lines or show_max_ri
+                    ) and site_no in st.session_state.ffa_results:
                         ffa = st.session_state.ffa_results[site_no]
                         if not ffa.get("error") and "parameters" in ffa:
                             params = ffa["parameters"]
-                            max_idx = peak_df["peak_flow_cfs"].idxmax()
-                            max_flow = peak_df.loc[max_idx, "peak_flow_cfs"]
-                            max_year = int(peak_df.loc[max_idx, "water_year"])
-                            ri = estimate_ri_from_lp3(
-                                max_flow,
+                            lp3_params = (
                                 params["mean_log"],
                                 params["std_log"],
                                 params["skew_weighted"],
                             )
-                            if ri:
-                                max_ri_info = {"flow": max_flow, "year": max_year, "ri": ri}
 
                     # PILF cut actually applied to the fit, so the override is
                     # visible on the record and not only in the parameter table
@@ -719,15 +621,16 @@ if st.session_state.gage_data:
                                 pilf_threshold = fp.get("low_outlier_threshold")
                                 pilf_source = fp.get("low_outlier_source")
 
-                    peak_fig = plot_peak_timeseries(
+                    peak_fig = plot_peak_flows_with_thresholds(
                         peak_df,
-                        gage_info.get("name", ""),
-                        site_no,
+                        site_name=gage_info.get("name", ""),
+                        site_no=site_no,
+                        mgbt_threshold=pilf_threshold,
+                        mgbt_threshold_source=pilf_source,
+                        lp3_params=lp3_params,
+                        return_periods=return_periods,
+                        annotate_max_peak=bool(show_max_ri),
                         yscale=yscale_peak,
-                        quantiles=quantiles,
-                        max_ri_info=max_ri_info,
-                        pilf_threshold=pilf_threshold,
-                        pilf_source=pilf_source,
                     )
                     st.pyplot(peak_fig)
 

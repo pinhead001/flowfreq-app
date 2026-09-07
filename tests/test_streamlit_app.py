@@ -46,6 +46,7 @@ WIRED_CALLABLES = (
     "export_comparison_csv",
     "export_ffa_to_zip",
     "plot_frequency_curve",
+    "plot_peak_flows_with_thresholds",
     "USGSgage",
     "Hydrograph",
 )
@@ -138,20 +139,31 @@ class TestPilfOverrideWiring:
         assert "pilf_override" in source[start : start + 300]
 
     def test_plot_marks_censored_peaks_when_a_threshold_applies(self, app_module):
-        fig = app_module.plot_peak_timeseries(
-            self._peaks(), "Big Sandy", "03606500", pilf_threshold=2000.0, pilf_source="override"
+        fig = app_module.plot_peak_flows_with_thresholds(
+            self._peaks(),
+            site_name="Big Sandy",
+            site_no="03606500",
+            mgbt_threshold=2000.0,
+            mgbt_threshold_source="override",
         )
         labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
         assert any("censored" in label for label in labels)
         assert any("2,000 cfs (override)" in label for label in labels)
 
     def test_plot_is_unchanged_when_no_threshold_applies(self, app_module):
-        fig = app_module.plot_peak_timeseries(self._peaks(), "Big Sandy", "03606500")
+        fig = app_module.plot_peak_flows_with_thresholds(
+            self._peaks(), site_name="Big Sandy", site_no="03606500"
+        )
         assert fig.axes[0].get_legend() is None
 
     def test_a_threshold_below_every_peak_censors_nothing(self, app_module):
-        """Guard against drawing an empty 'censored' series and a stray legend."""
-        fig = app_module.plot_peak_timeseries(
-            self._peaks(), "Big Sandy", "03606500", pilf_threshold=1.0
+        """Guard against drawing an empty 'censored' series and a stray legend
+        entry -- the threshold line itself still draws (a real, applied cut
+        worth showing even when it happens to exclude nothing), just with no
+        "censored" wording and no hollow bars."""
+        fig = app_module.plot_peak_flows_with_thresholds(
+            self._peaks(), site_name="Big Sandy", site_no="03606500", mgbt_threshold=1.0
         )
-        assert fig.axes[0].get_legend() is None
+        labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+        assert not any("censored" in label for label in labels)
+        assert all(p.get_facecolor()[3] != 0 for p in fig.axes[0].patches)

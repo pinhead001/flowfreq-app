@@ -37,19 +37,42 @@ Updated later the same day once the four items below were worked through on
       flowfreq-computed number. That is consistent with `CLAUDE.md`'s "no analysis code here"
       framing: the numeric behavior lives in, and is tested by, the library repo.
 
+## Resolved (session continued after v0.5.0/v0.6.0/v0.6.1 landed on the library)
+
+- [x] **Pin bumped to `flowfreq@v0.6.1`** (through `v0.5.0` and `v0.6.0` first, as each landed
+      on the library). `requirements.txt` and `CLAUDE.md`'s pin quote both updated;
+      `pip install -r requirements.txt --upgrade` confirmed `flowfreq==0.6.1` actually
+      installed, not just declared.
+- [x] **`plot_peak_timeseries` deleted; `streamlit_app.py` now calls
+      `flowfreq.freq_plot.plot_peak_flows_with_thresholds` directly.** All four features the
+      app's copy had (return-period lines, max-peak annotation, PILF/MGBT hollow-bar
+      censoring, linear/log toggle) landed on the library function across `v0.5.0`/`v0.6.0`/
+      `v0.6.1` before this switch, so nothing was lost. `lp3_params` is built from
+      `mean_log`/`std_log`/`skew_weighted` (same triple the app's old `estimate_ri_from_lp3`
+      calls elsewhere already use) whenever the user wants either return-period lines or the
+      max-peak estimate; `return_periods` uses the user's `show_quantile_lines` multiselect
+      (falls back to the library's own default set only when that's empty but the max-peak
+      annotation is still wanted, a minor edge-case behavior change from before -- previously
+      no lines would draw in that combination). `mgbt_threshold`/`mgbt_threshold_source` carry
+      the existing PILF-override wiring across unchanged. `estimate_ri_from_lp3` itself was
+      NOT touched -- still used at its two other call sites (frequency-curve max-flow label,
+      ZIP export).
+- [x] **Numeric/visual equivalence checked, not assumed.** The library's analytic reference
+      lines were verified against `run_ffa`'s actual `quantile_df` on both a censored and an
+      uncensored fixture before the v0.6.1 release (0.0% diff, see `flowfreq/TODO.md`); this
+      session additionally rendered a real figure with app-shaped inputs (Big Sandy, PILF
+      override, linear y-axis, three return periods) and confirmed it visually -- hollow bars
+      below the threshold line, correct dotted reference lines and labels, correct max-peak
+      annotation, correct title format.
+- [x] **`make check` green** with the three rewired `TestPilfOverrideWiring` plot tests
+      (updated to call `plot_peak_flows_with_thresholds` with its new parameter names) and a
+      new `WIRED_CALLABLES` entry for it: 29 passed.
+
 ## Open
 
-- [ ] **`plot_peak_timeseries`'s return-period lines and max-peak annotation still need to
-      move to the library** (`flowfreq/freq_plot.py`) before this app's copy can be deleted --
-      tracked on the library side in `flowfreq/TODO.md`'s Follow-ups section. Do not delete
-      the local copy until that lands and this app's pin moves past it; switching to the
-      library's `plot_peak_flows_with_thresholds` today would lose those two features. Not
-      touched this session, per the coordinator's explicit non-goal.
-- [ ] **Branch not yet merged or pushed.** `bump-flowfreq-0.4.0` is now three commits ahead of
-      `main` (the original pin bump plus this session's doc/import/test fixes), still local
-      only. Merging into `main` and pushing to `origin` is the coordinator's call, once the
-      cross-repo sequence (library lanes land -> tag -> this bump) is confirmed complete
-      across all four lanes.
+- [ ] **Branch not yet merged or pushed.** Still local only, now several commits ahead of
+      `main` (pin bump through v0.6.1, doc/import/test fixes, the plot_peak_timeseries
+      deletion and rewiring). Merging into `main` and pushing to `origin` is the user's call.
 
 ## Found already in progress, not yet landed (as of Phase 0, now folded into "Resolved" above)
 
@@ -58,12 +81,12 @@ Updated later the same day once the four items below were worked through on
   no unexplained numeric drift (see "Resolved" above) -- the pin bump itself needed no
   correction, only the doc/import follow-through it implied.
 
-## Status snapshot (2026-09-05, end of session)
+## Status snapshot (2026-09-07, session continued)
 
 - `origin/main` tip: `a41b918` ("Merge pull request #2 from pinhead001/windows-friction"),
   unchanged this session.
-- Local branch `bump-flowfreq-0.4.0`: started at `4c8a69f` ("bump flowfreq pin to v0.4.0"),
-  now ahead of that with this session's commits (CLAUDE.md fix, import switch, TODO.md
-  update). Still not pushed to `origin`; not merged into `main`.
-- `flowfreq` pinned at `v0.4.0` in `requirements.txt`, and now actually installed in the
-  active environment (was still 0.3.0 at the start of this session).
+- Local branch, renamed `bump-flowfreq` (was `bump-flowfreq-0.4.0`, then `-0.5.0` -- dropped
+  the version from the name since it kept needing another bump as the library gained the
+  features this migration needed). Still not pushed to `origin`; not merged into `main`.
+- `flowfreq` pinned at `v0.6.1` in `requirements.txt` and `CLAUDE.md`, and actually installed
+  in the active environment (confirmed via `pip show flowfreq`).
