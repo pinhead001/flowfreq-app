@@ -34,15 +34,15 @@ subdirectory** without also restoring that hack.
 ## The pinned dependency
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.7.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.10.0
 ```
 
 A change in the library does not reach this app until that tag is bumped. When you need a
 library change, land it there, tag a release, then bump this line — one edit, deliberate.
 Never point it at `main`: a regression upstream would reach the deployed app with no warning.
 
-`numpy`, `pandas`, `matplotlib` and `scipy` are declared even though `flowfreq` pulls them
-in, because `streamlit_app.py` imports all four directly and a direct import should not lean
+`numpy`, `pandas`, `matplotlib`, `scipy` and `requests` are declared even though `flowfreq`
+pulls them in, because `streamlit_app.py` imports all five directly and a direct import should not lean
 on a transitive dependency.
 
 ## Build & Development Commands
@@ -126,5 +126,7 @@ longer matches a `flowfreq` signature after a version bump.
 ## Deployment
 
 Streamlit Community Cloud, from `main`, entry point `streamlit_app.py`. See
-`docs/vignette_streamlit_web.md`. The app makes no authenticated calls; USGS NWIS is public
-and no secrets are needed.
+`docs/vignette_streamlit_web.md`. No secrets are required: flowfreq reads USGS data from the
+public Water Data API, which allows 1,000 requests/hour per IP without a key. An optional
+`USGS_API_KEY` (environment variable or Streamlit secret; the app passes the secret to
+`flowfreq.waterdata.set_api_key`) raises that limit.

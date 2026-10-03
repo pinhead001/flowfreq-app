@@ -17,7 +17,11 @@ class TestFormatParametersDf:
             "std_log": 0.2892,
             "skew_station": -0.1187,
             "skew_weighted": -0.1187,
-            "regional_skew": -0.302,
+            "regional_skew": -0.07,
+            "regional_skew_source": "user",
+            "skew_note": "WA Pacific Northwest study",
+            "n_low_outliers": 2,
+            "n_mgbt_outliers": 1,
         }
         df = format_parameters_df(params)
         expected_cols = [
@@ -26,8 +30,10 @@ class TestFormatParametersDf:
             "Station Skew",
             "Weighted Skew",
             "Regional Skew",
+            "Skew Source",
             "PILF Threshold (cfs)",
             "PILFs",
+            "MGBT Outliers",
         ]
         assert list(df.columns) == expected_cols
         assert len(df) == 1
@@ -50,6 +56,32 @@ class TestFormatParametersDf:
             {"low_outlier_threshold": 500.0, "n_low_outliers": 1, "low_outlier_source": "override"}
         )
         assert override["PILF Threshold (cfs)"].iloc[0] == "500 (override)"
+
+
+class TestSkewSourceColumns:
+    def test_skew_source_names_the_study(self):
+        df = format_parameters_df({"regional_skew_source": "user", "skew_note": "WA study"})
+        assert df["Skew Source"].iloc[0] == "Regional (supplied): WA study"
+
+    def test_station_only_has_no_regional_skew(self):
+        """run_ffa returns regional_skew=None under station skew; it must not crash."""
+        df = format_parameters_df({"regional_skew": None, "regional_skew_source": "station"})
+        assert df["Regional Skew"].iloc[0] == "none"
+        assert df["Skew Source"].iloc[0] == "Station skew only"
+
+    def test_fallback_is_labelled_unsourced(self):
+        df = format_parameters_df({"regional_skew_source": "default"})
+        assert "Unsourced" in df["Skew Source"].iloc[0]
+
+    def test_mgbt_outliers_shown_beside_pilfs(self):
+        df = format_parameters_df({"n_low_outliers": 4, "n_mgbt_outliers": 2})
+        assert df["PILFs"].iloc[0] == "4"
+        assert df["MGBT Outliers"].iloc[0] == "2"
+
+    def test_old_result_dicts_render(self):
+        df = format_parameters_df({"mean_log": 3.7})
+        assert df["Skew Source"].iloc[0] == "n/a"
+        assert df["MGBT Outliers"].iloc[0] == "n/a"
 
 
 class TestFormatQuantileDf:
