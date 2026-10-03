@@ -60,7 +60,10 @@ than accepting whatever the default happens to be.
 would force you to take it from the live app before the new one is proven. That is the
 cut-over, and it belongs at the end.
 
-No secrets are needed. USGS NWIS is public and the app makes no authenticated calls.
+No secrets are required. USGS data comes from the public Water Data API, which allows
+1,000 requests/hour per IP without a key; set `USGS_API_KEY` (an environment variable, or
+a Streamlit secret of that name) to raise the limit. Keys are free from
+<https://api.waterdata.usgs.gov/signup/>.
 
 ## 4. Verify before cutting over
 
