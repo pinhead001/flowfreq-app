@@ -339,8 +339,8 @@ class TestPeakCodes:
         expected = _coded_peaks()["qualification_code"]
         assert len(call["peak_codes"]) == len(expected)
         assert list(call["peak_codes"].dropna()) == list(expected.dropna())
-        # pd.NA becomes None: flowfreq's code parser raises on pd.NA.
-        assert call["peak_codes"].iloc[1] is None
+        # Passed through unchanged: flowfreq >= 0.10.1 reads pd.NA as "no code".
+        assert call["peak_codes"].isna().iloc[1]
         assert call["apply_peak_codes"] is False
         assert call["allow_regulated"] is True
         assert call["site_no"] == "03606500"
@@ -429,29 +429,14 @@ class TestRegulationScreen:
 
 
 class TestDataSource:
-    def test_site_info_failure_falls_back_to_water_data(self, app_module, monkeypatch):
-        from flowfreq.usgs import USGSgage
-
-        gage = USGSgage("12449500")  # nothing fetched: as after a legacy 503
-        monkeypatch.setattr(
-            app_module,
-            "fetch_monitoring_location",
-            lambda site_no, timeout=30: {
-                "monitoring_location_name": "METHOW RIVER AT TWISP, WA",
-                "drainage_area": 1301.0,
-            },
-        )
-        assert app_module.fill_site_metadata(gage) == ("METHOW RIVER AT TWISP, WA", 1301.0)
-
-    def test_water_data_failure_leaves_metadata_unset(self, app_module, monkeypatch):
-        import requests
-        from flowfreq.usgs import USGSgage
-
-        def down(site_no, timeout=30):
-            raise requests.ConnectionError("down")
-
-        monkeypatch.setattr(app_module, "fetch_monitoring_location", down)
-        assert app_module.fill_site_metadata(USGSgage("12449500")) == (None, None)
+    def test_site_info_failure_does_not_block_the_download(self, app_module):
+        """flowfreq >= 0.10.1 reads site info from the Water Data API; a failure
+        there is logged and the download proceeds with the attributes unset."""
+        source = _source(app_module)
+        call = source.index("gage.fetch_site_info()")
+        assert "try:" in source[call - 60 : call]
+        assert "site_name, drainage_area = gage.site_name, gage.drainage_area" in source
+        assert "fill_site_metadata" not in source
 
     def test_daily_download_does_not_use_legacy_por_dates(self, app_module):
         """The legacy site catalog's first daily row can be another parameter.
