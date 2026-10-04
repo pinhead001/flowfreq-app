@@ -416,12 +416,12 @@ st.sidebar.header("Input Parameters")
 input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
-    gage_input = st.sidebar.text_input("USGS Gage Number", value="09355500")
+    gage_input = st.sidebar.text_input("USGS Gage Number", value="12358500")
     gage_list = [gage_input.strip()] if gage_input else []
 else:
     gage_input = st.sidebar.text_area(
         "USGS Gage Numbers (one per line or comma-separated)",
-        value="09355500\n11066460",
+        value="12358500\n12449500",
         height=100,
     )
     # Parse input

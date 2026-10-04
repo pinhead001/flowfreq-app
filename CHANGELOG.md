@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The pin moves from v0.7.0 to v0.10.0 (library release notes: v0.8.0, v0.9.0, v0.10.0).
 What changes for someone using the app:
 
+- **New default gages.** The single-gage default is now 12358500 (Middle Fork Flathead River
+  near West Glacier, MT; GAGES-II reference); the multi-gage default is 12358500 and
+  12449500 (Methow River near Pateros, WA). The old defaults, 09355500 and 11066460, are
+  classified regulated (dam storage 607 and 2,033 days of runoff) and would be refused by
+  the new regulation screen on a first run.
+
 - **Skew source picker.** The two number inputs that presented -0.302 / SE 0.55 as a
   "nationwide default" are gone; Bulletin 17C has no such default. Choose instead:
   - *Published regional study* (the default): the gage is looked up with
