@@ -27,7 +27,7 @@ from flowfreq.freq_plot import plot_frequency_curve, plot_peak_flows_with_thresh
 from flowfreq.regional_skew import RegionalSkew, RegionalSkewUnavailable, regional_skew_for_site
 from flowfreq.regulation import RegulatedRecordError
 from flowfreq.usgs import USGSgage
-from flowfreq.waterdata import API_KEY_ENV, fetch_monitoring_location, set_api_key
+from flowfreq.waterdata import API_KEY_ENV, set_api_key
 from flowfreq.workflow import (
     B17C_DEFAULT_SKEW,
     B17C_DEFAULT_SKEW_SE,
@@ -245,13 +245,8 @@ def run_site_ffa(
     except requests.RequestException as e:
         return _ffa_error(f"Regional skew lookup failed for USGS {site_no}: {e}", kind="skew")
 
-    peak_codes = None
-    if "qualification_code" in peak_df:
-        codes = peak_df["qualification_code"]
-        # Missing codes as None. flowfreq 0.10.0's parser reads None and NaN as
-        # "no code" but raises TypeError on pd.NA, which a nullable string
-        # column (pd.StringDtype with its default na_value) holds.
-        peak_codes = codes.astype(object).where(codes.notna(), None)
+    # flowfreq >= 0.10.1 reads None, NaN, pd.NA and "" alike as "no code".
+    peak_codes = peak_df["qualification_code"] if "qualification_code" in peak_df else None
     try:
         result = run_ffa(
             peak_flows=peak_df["peak_flow_cfs"].values,
@@ -355,44 +350,6 @@ def _configure_api_key() -> None:
         return
     if key:
         set_api_key(str(key))
-
-
-def fill_site_metadata(gage: USGSgage) -> Tuple[Optional[str], Optional[float]]:
-    """Site name and drainage area, from the Water Data API where NWIS gave none.
-
-    ``fetch_site_info`` still reads the legacy NWIS site service, which can be
-    down (it returned 503 on 2026-10-03). It logs rather than raises and leaves
-    the attributes unset; this fills them from the OGC monitoring-locations
-    record instead.
-
-    Parameters
-    ----------
-    gage : USGSgage
-        A gage on which ``fetch_site_info`` has been attempted.
-
-    Returns
-    -------
-    tuple
-        ``(site_name, drainage_area_sqmi)``; either may be None.
-    """
-    name, area = gage.site_name, gage.drainage_area
-    if name and area:
-        return name, area
-    try:
-        loc = fetch_monitoring_location(gage.site_no, timeout=30)
-    except requests.RequestException as e:
-        logger.warning("Monitoring-location lookup failed for %s: %s", gage.site_no, e)
-        return name, area
-    if not name:
-        raw = loc.get("monitoring_location_name")
-        name = raw.strip() if isinstance(raw, str) and raw.strip() else None
-    if not area:
-        try:
-            raw_area = loc.get("drainage_area")
-            area = float(raw_area) if raw_area is not None else None
-        except (TypeError, ValueError):
-            area = None
-    return name, area
 
 
 _configure_api_key()
@@ -756,25 +713,18 @@ if download_data and gage_list:
 
         try:
             gage = USGSgage(site_no)
-            # Site info (name, drainage area, POR dates) still comes from the
-            # legacy NWIS site service, which can be down -- it returned 503 on
-            # 2026-10-03. It is a nicety here, not a requirement: the daily
-            # download needs no POR dates (flowfreq requests the full record
-            # when given none), the displayed POR is taken from the data
-            # itself, and the name and area fall back to the Water Data API.
+            # Site info (name, drainage area) comes from the Water Data API
+            # since flowfreq 0.10.1. It is a nicety here, not a requirement:
+            # a failure leaves the attributes unset and the download proceeds.
             try:
                 gage.fetch_site_info()
             except Exception as e:
                 logger.warning("Site info lookup failed for %s: %s", site_no, e)
-            site_name, drainage_area = fill_site_metadata(gage)
+            site_name, drainage_area = gage.site_name, gage.drainage_area
 
             status_text.text(f"Downloading data for {site_no}...")
 
-            # No POR dates: flowfreq requests the full record itself. The
-            # legacy site service's dates were never reliable here -- its
-            # catalog lists every parameter, and flowfreq 0.10.0 takes the
-            # first daily row, so 12449500 got water temperature's 2002 span
-            # (165 days) instead of discharge's 1919-2026.
+            # No dates: download_daily_flow requests the full period of record.
             daily_data = gage.download_daily_flow()
 
             # Store gage info
