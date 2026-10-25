@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Bumped flowfreq to v0.10.1
+### Bumped flowfreq to v0.15.0
 
-The pin moves from v0.7.0 to v0.10.1 (library release notes: v0.8.0, v0.9.0, v0.10.0, v0.10.1). v0.10.1 reads site info from the Water Data API and accepts `pd.NA` peak codes, so the app's workarounds for both are gone.
+The pin moves from v0.7.0 to v0.15.0 (library release notes: v0.8.0 through v0.15.0). v0.10.1 and later read site info from the Water Data API and accepts `pd.NA` peak codes, so the app's workarounds for both are gone.
 What changes for someone using the app:
 
 - **New default gages.** The single-gage default is now 12358500 (Middle Fork Flathead River

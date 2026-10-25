@@ -10,7 +10,7 @@ Everything this file previously tracked -- the pin bump through v0.6.1, the
 and assorted doc/import fixes -- is merged to `main`. Not repeated here; see `git log` if the
 session-by-session detail is ever needed.
 
-- `flowfreq` pinned at `v0.7.0` in `requirements.txt` and `CLAUDE.md`, confirmed actually
+- `flowfreq` pinned at `v0.15.0` in `requirements.txt` and `CLAUDE.md`, confirmed actually
   installed via `pip show flowfreq` rather than assumed from the pin alone.
 - `make check` (black --check, isort --check-only, pytest) green: 29 passed, no diffs --
   verified at both v0.6.1 and v0.7.0, since v0.7.0 changes nothing this app's code path
