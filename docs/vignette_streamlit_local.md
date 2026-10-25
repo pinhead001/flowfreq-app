@@ -5,7 +5,7 @@ USGS streamflow data, running Bulletin 17C analysis, and exporting results.
 
 ## 1. Install
 
-Python 3.10 or newer — Streamlit sets that floor.
+Python 3.11 or newer — flowfreq sets that floor.
 
 ```bash
 git clone https://github.com/pinhead001/flowfreq-app
@@ -66,7 +66,7 @@ streamlit run streamlit_app.py --server.port 8502
 app only when you bump it:
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.3.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
 ```
 
 Land the change in `flowfreq`, tag a release there, bump that line, then run `make test`

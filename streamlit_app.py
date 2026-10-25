@@ -1283,7 +1283,9 @@ if st.session_state.gage_data:
             if enable_ffa and len(selected_gages) > 1:
                 site_results_for_export = {}
                 for sno in selected_gages:
-                    if sno in st.session_state.ffa_results:
+                    if sno in st.session_state.ffa_results and not st.session_state.ffa_results[
+                        sno
+                    ].get("error"):
                         attrs = st.session_state.gage_info.get(sno, {})
                         site_results_for_export[sno] = {
                             "site_name": attrs.get("name", sno),

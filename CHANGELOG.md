@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bumped flowfreq to v0.15.0
 
-The pin moves from v0.7.0 to v0.15.0 (library release notes: v0.8.0 through v0.15.0). v0.10.1 and later read site info from the Water Data API and accepts `pd.NA` peak codes, so the app's workarounds for both are gone.
+The pin moves from v0.7.0 to v0.15.0 (library release notes: v0.8.0 through v0.15.0). v0.10.1 and later read site info from the Water Data API and accept `pd.NA` peak codes, so the app's workarounds for both are gone.
 What changes for someone using the app:
 
 - **New default gages.** The single-gage default is now 12358500 (Middle Fork Flathead River
@@ -38,9 +38,9 @@ What changes for someone using the app:
   results; *Analyze anyway (regulated gage)* fits it and records the override.
 - **New data source.** Peaks and daily values (and IV, which the app does not use) now come
   from the USGS Water Data OGC API. Without a key it allows 1,000 requests/hour per IP; set `USGS_API_KEY` (environment
-  or Streamlit secret) to raise it. The legacy NWIS site service, still used for site info,
-  returned 503s on 2026-10-03; a failure there no longer affects the download. The site name
-  and drainage area fall back to the Water Data API, and the daily record is requested in
+  or Streamlit secret) to raise it. The legacy NWIS site service, which the app used for site
+  info, returned 503s on 2026-10-03. As of flowfreq v0.10.1 site info comes from the Water Data
+  API, and a failure there does not affect the download. The daily record is requested in
   full rather than between the legacy service's POR dates. Those dates came from the first
   daily series in its catalog, which for 12449500 was water temperature, so that gage's daily
   record had been cut to 165 days in 2002.

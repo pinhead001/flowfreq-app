@@ -156,3 +156,24 @@ class TestExportComparisonCSV:
             assert col in df.columns
         assert df["Skew Source"].iloc[0] == "Regional (supplied): WA Pacific Northwest study"
         assert df["MGBT Outliers"].iloc[0] == 1
+
+
+class TestComparisonWithFailedFit:
+    def test_failed_fit_gives_no_q100_and_does_not_raise(self, mock_ffa):
+        failed = {"error": "refused", "quantile_df": pd.DataFrame(), "parameters": {}}
+        site_results = {
+            "12345678": {"site_name": "Ok", "drainage_area_sqmi": 100.0, "ffa_results": mock_ffa},
+            "01426500": {"site_name": "Refused", "drainage_area_sqmi": 50.0, "ffa_results": failed},
+        }
+        zf, buf = _make_zip()
+        with zf:
+            export_comparison_csv(zf, site_results)
+        with zipfile.ZipFile(buf) as zr:
+            df = pd.read_csv(
+                io.StringIO(zr.read("comparison_summary.csv").decode()),
+                dtype=str,
+                keep_default_na=False,
+            )
+        refused = df[df["Site No"] == "01426500"].iloc[0]
+        assert refused["100-yr Flow (cfs)"] == ""
+        assert refused["100-yr Flow/DA (cfs/sq mi)"] == "N/A"

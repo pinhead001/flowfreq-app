@@ -114,7 +114,11 @@ def export_comparison_csv(
 
         # Extract 100-yr flow
         flow_100 = None
-        if quantile_df is not None:
+        if (
+            quantile_df is not None
+            and "Return Interval (yr)" in quantile_df.columns
+            and "Flow (cfs)" in quantile_df.columns
+        ):
             mask = quantile_df["Return Interval (yr)"] == 100.0
             matched = quantile_df.loc[mask, "Flow (cfs)"]
             if len(matched) > 0:

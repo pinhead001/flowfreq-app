@@ -451,3 +451,10 @@ class TestDataSource:
 
     def test_api_key_is_mentioned(self, app_module):
         assert "1,000 requests/hour" in _source(app_module)
+
+
+class TestComparisonExportFiltersErrors:
+    def test_failed_fits_are_left_out_of_the_comparison_export(self, app_module):
+        source = " ".join(_source(app_module).split())
+        block = source.split("site_results_for_export = {}")[1].split("export_comparison_csv")[0]
+        assert 'not st.session_state.ffa_results[ sno ].get("error")' in block

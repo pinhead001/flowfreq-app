@@ -17,7 +17,7 @@ this app installs as a pinned dependency. This repository is the user interface.
 
 ## Run it locally
 
-Python 3.10 or newer — Streamlit sets that floor.
+Python 3.11 or newer — flowfreq sets that floor.
 
 ```bash
 git clone https://github.com/pinhead001/flowfreq-app
