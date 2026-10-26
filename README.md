@@ -34,6 +34,7 @@ Opens at <http://localhost:8501>. Or `make run`.
 | File | Purpose |
 |------|---------|
 | `streamlit_app.py` | The app. A top-level script, not a module with a `main()` |
+| `ungaged_ui.py` | The ungaged-site page: regional-regression quantiles at a point via `flowfreq.estimate_at_site` |
 | `ffa_runner.py` | Display formatting — turns analysis output into presentable tables |
 | `ffa_export.py` | ZIP export: PNG plots, CSV tables, LP3 parameters |
 | `requirements.txt` | Runtime dependencies, including the pinned `flowfreq` tag |
@@ -46,7 +47,7 @@ the library.
 `requirements.txt` pins a tag:
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.16.0
 ```
 
 To pick up library changes: land them in `flowfreq`, tag a release there, then bump that
