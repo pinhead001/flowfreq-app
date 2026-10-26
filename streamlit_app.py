@@ -37,6 +37,7 @@ from flowfreq.workflow import (
     run_ffa,
 )
 
+import ungaged_ui
 from ffa_export import export_comparison_csv, export_ffa_to_zip
 from ffa_runner import format_parameters_df, format_quantile_df, skew_source_label
 
@@ -365,6 +366,16 @@ st.title("USGS Hydrograph-erator")
 st.markdown(
     "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
 )
+
+PAGE_GAGED = "Gaged site"
+PAGE_UNGAGED = "Ungaged site"
+page = st.sidebar.radio("Page", [PAGE_GAGED, PAGE_UNGAGED], horizontal=True)
+
+if page == PAGE_UNGAGED:
+    ungaged_ui.render()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**flowfreq** v{__version__}")
+    st.stop()
 
 # Sidebar inputs
 st.sidebar.header("Input Parameters")

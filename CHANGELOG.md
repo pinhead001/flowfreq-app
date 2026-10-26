@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Ungaged-site page, flowfreq v0.16.0
+
+The pin moves from v0.15.0 to v0.16.0, which adds `flowfreq.estimate_at_site`.
+
+- **New page: Ungaged site** (sidebar "Page" switch). Enter a latitude, longitude and
+  jurisdiction; the basin is delineated with StreamStats and flood quantiles come from the
+  offline regional regression library, with the regions used, basin characteristics, caveats
+  and a Markdown report download. Each jurisdiction is labelled with its coverage
+  (verified, partial, NSS snapshot, or none); NSS-snapshot sets need an explicit opt-in and
+  show their advisory.
+- **Overlapping equation sets.** Where NSS serves superseded and current equations side by
+  side (Tennessee: GC344, GC2016, GC2020), the page offers them as a selector and re-runs
+  with the chosen set; a refused choice shows the library's reason.
+- `ungaged_ui.py` holds the page; `run_estimate` never raises and returns an error dict
+  with a `kind`.
+
 ### Bumped flowfreq to v0.15.0
 
 The pin moves from v0.7.0 to v0.15.0 (library release notes: v0.8.0 through v0.15.0). v0.10.1 and later read site info from the Water Data API and accept `pd.NA` peak codes, so the app's workarounds for both are gone.

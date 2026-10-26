@@ -19,6 +19,7 @@ here is the Streamlit UI and the display formatting that serves it.
 
 ```
 streamlit_app.py     the app; a top-level script, not a module with a main()
+ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate` (never raises), `coverage_badge`
 ffa_runner.py        display formatting: pandas frames of pre-formatted strings
 ffa_export.py        ZIP export (PNG, CSV, LP3 parameters)
 requirements.txt     runtime deps, including the pinned flowfreq tag
@@ -34,7 +35,7 @@ subdirectory** without also restoring that hack.
 ## The pinned dependency
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.16.0
 ```
 
 A change in the library does not reach this app until that tag is bumped. When you need a
