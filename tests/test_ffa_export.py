@@ -21,7 +21,14 @@ def mock_ffa():
             "skew_station": -0.1,
             "skew_weighted": -0.2,
             "skew_used": -0.2,
-            "regional_skew": -0.302,
+            "regional_skew": -0.07,
+            "regional_skew_source": "user",
+            "skew_note": "WA Pacific Northwest study",
+            "skew_citation": "Mastin and others, 2016, SIR 2016-5118",
+            "n_low_outliers": 2,
+            "n_mgbt_outliers": 1,
+            "peak_codes_applied": {"7": 1, "6": 2},
+            "site_classification": {"site_class": "reference", "regulation_override": False},
         },
         "quantile_df": pd.DataFrame(
             {
@@ -100,6 +107,22 @@ class TestExportFFAToZip:
         for col in ["mean_log", "std_log", "method", "converged"]:
             assert col in df.columns
 
+    def test_parameters_csv_records_skew_source_and_outlier_counts(self, mock_ffa):
+        zf, buf = _make_zip()
+        with zf:
+            export_ffa_to_zip(zf, "12345678", mock_ffa)
+        with zipfile.ZipFile(buf) as zr:
+            content = zr.read("12345678/lp3_parameters.csv").decode()
+        row = pd.read_csv(io.StringIO(content)).iloc[0]
+        assert row["regional_skew"] == -0.07
+        assert row["regional_skew_source"] == "user"
+        assert row["skew_citation"].startswith("Mastin")
+        assert row["n_low_outliers"] == 2
+        assert row["n_mgbt_outliers"] == 1
+        assert row["peak_codes_applied"] == "7:1; 6:2"
+        assert row["site_class"] == "reference"
+        assert not row["regulation_override"]
+
 
 class TestExportComparisonCSV:
     def test_export_comparison_csv_format(self, mock_ffa):
@@ -123,8 +146,34 @@ class TestExportComparisonCSV:
             "100-yr Flow (cfs)",
             "100-yr Flow/DA (cfs/sq mi)",
             "Weighted Skew",
+            "Skew Source",
+            "PILFs",
+            "MGBT Outliers",
             "Method",
             "Converged",
         ]
         for col in expected_cols:
             assert col in df.columns
+        assert df["Skew Source"].iloc[0] == "Regional (supplied): WA Pacific Northwest study"
+        assert df["MGBT Outliers"].iloc[0] == 1
+
+
+class TestComparisonWithFailedFit:
+    def test_failed_fit_gives_no_q100_and_does_not_raise(self, mock_ffa):
+        failed = {"error": "refused", "quantile_df": pd.DataFrame(), "parameters": {}}
+        site_results = {
+            "12345678": {"site_name": "Ok", "drainage_area_sqmi": 100.0, "ffa_results": mock_ffa},
+            "01426500": {"site_name": "Refused", "drainage_area_sqmi": 50.0, "ffa_results": failed},
+        }
+        zf, buf = _make_zip()
+        with zf:
+            export_comparison_csv(zf, site_results)
+        with zipfile.ZipFile(buf) as zr:
+            df = pd.read_csv(
+                io.StringIO(zr.read("comparison_summary.csv").decode()),
+                dtype=str,
+                keep_default_na=False,
+            )
+        refused = df[df["Site No"] == "01426500"].iloc[0]
+        assert refused["100-yr Flow (cfs)"] == ""
+        assert refused["100-yr Flow/DA (cfs/sq mi)"] == "N/A"

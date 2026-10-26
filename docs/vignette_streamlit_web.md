@@ -15,7 +15,7 @@ you are deploying for the first time, the cut-over section simply does not apply
   deploy at dependency resolution:
 
 ```bash
-git ls-remote --tags https://github.com/pinhead001/flowfreq | grep v0.3.0
+git ls-remote --tags https://github.com/pinhead001/flowfreq | grep v0.15.0
 ```
 
 ## 2. What Cloud reads
@@ -24,7 +24,7 @@ Just `requirements.txt`, at the repository root:
 
 ```
 streamlit>=1.28.0
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.3.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
 numpy>=1.20.0
 pandas>=1.3.0
 matplotlib>=3.4.0
@@ -52,19 +52,22 @@ No `packages.txt` is needed: no system libraries, and no Fortran toolchain. The
 Two things are easy to get wrong here and expensive to undo.
 
 **The Python version is fixed at creation.** Changing it later means deleting the app and
-redeploying, which releases its URL in the process. The app needs 3.10 or newer because
-Streamlit does, and 3.12 is the version CI actually validates — pick it explicitly rather
+redeploying, which releases its URL in the process. The app needs 3.11 or newer because
+flowfreq does, and 3.12 is the version CI actually validates — pick it explicitly rather
 than accepting whatever the default happens to be.
 
 **Use a throwaway subdomain.** A URL can only belong to one app, so claiming the real one now
 would force you to take it from the live app before the new one is proven. That is the
 cut-over, and it belongs at the end.
 
-No secrets are needed. USGS NWIS is public and the app makes no authenticated calls.
+No secrets are required. USGS data comes from the public Water Data API, which allows
+1,000 requests/hour per IP without a key; set `USGS_API_KEY` (an environment variable, or
+a Streamlit secret of that name) to raise the limit. Keys are free from
+<https://api.waterdata.usgs.gov/signup/>.
 
 ## 4. Verify before cutting over
 
-In the build log, watch for the line resolving `flowfreq @ git+…@v0.3.0`. That step is unique
+In the build log, watch for the line resolving `flowfreq @ git+…@v0.15.0`. That step is unique
 to this deployment — the old app never had an external dependency to fetch — so it is where a
 private repo, a missing tag or a typo in the pin will surface.
 

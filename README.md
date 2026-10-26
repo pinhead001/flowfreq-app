@@ -7,12 +7,17 @@ Download annual peak flows for any USGS gage, run a Bulletin 17C analysis (EMA w
 Method-of-Moments fallback), compare station / weighted / regional skew options, and export
 the results as a ZIP of plots, tables and fitted parameters.
 
+The regional skew comes from a published study that covers the gage (looked up by
+flowfreq), the station skew alone, or a value you enter; there is no national default.
+NWIS peak qualification codes are applied as peakfq applies them, and gages classed as
+regulated are refused unless you tick the override.
+
 The analysis itself lives in **[flowfreq](https://github.com/pinhead001/flowfreq)**, which
 this app installs as a pinned dependency. This repository is the user interface.
 
 ## Run it locally
 
-Python 3.10 or newer — Streamlit sets that floor.
+Python 3.11 or newer — flowfreq sets that floor.
 
 ```bash
 git clone https://github.com/pinhead001/flowfreq-app
@@ -41,7 +46,7 @@ the library.
 `requirements.txt` pins a tag:
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.3.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
 ```
 
 To pick up library changes: land them in `flowfreq`, tag a release there, then bump that
@@ -62,8 +67,12 @@ signature after a version bump.
 ## Deployment
 
 Streamlit Community Cloud, from `main`, entry point `streamlit_app.py`. See
-[docs/vignette_streamlit_web.md](docs/vignette_streamlit_web.md). No secrets required —
-USGS NWIS is a public service.
+[docs/vignette_streamlit_web.md](docs/vignette_streamlit_web.md).
+
+No secrets are required. USGS data comes from the public Water Data API, which allows
+1,000 requests/hour per IP without a key; set `USGS_API_KEY` (an environment variable, or
+a Streamlit secret of that name) to raise the limit. Keys are free from
+<https://api.waterdata.usgs.gov/signup/>.
 
 ## History
 

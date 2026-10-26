@@ -103,9 +103,14 @@ class TestPilfOverrideWiring:
         )
 
     def test_app_passes_the_override_to_run_ffa(self, app_module):
-        """Both call sites, not just the download path."""
+        """Both call sites, not just the download path.
+
+        Both now go through run_site_ffa, which makes the one run_ffa call; each
+        call site must hand it the sidebar's override.
+        """
         source = pathlib.Path(app_module.__file__).read_text()
-        assert source.count("low_outlier_threshold_override=pilf_override or None") == 2
+        assert source.count("low_outlier_threshold_override=pilf_override or None") == 1
+        assert source.count("pilf_override=pilf_override,") == 2
 
     def test_year_boxes_reset_when_a_new_gage_is_downloaded(self, app_module):
         """A stored widget key outlives the gage it was chosen for.
@@ -136,7 +141,7 @@ class TestPilfOverrideWiring:
         """Changing it without refitting would leave the curve silently stale."""
         source = pathlib.Path(app_module.__file__).read_text()
         start = source.index("current_ffa_inputs = (")
-        assert "pilf_override" in source[start : start + 300]
+        assert "pilf_override" in source[start : start + 400]
 
     def test_plot_marks_censored_peaks_when_a_threshold_applies(self, app_module):
         fig = app_module.plot_peak_flows_with_thresholds(
@@ -167,3 +172,289 @@ class TestPilfOverrideWiring:
         labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
         assert not any("censored" in label for label in labels)
         assert all(p.get_facecolor()[3] != 0 for p in fig.axes[0].patches)
+
+
+# ---------------------------------------------------------------------------
+# flowfreq 0.10.0: skew source, peak codes, regulation screen, data source
+# ---------------------------------------------------------------------------
+
+
+def _coded_peaks():
+    """Big Sandy's systematic record with codes on two years, as NWIS returns them."""
+    import pandas as pd
+
+    from tests.fixtures.big_sandy import SYSTEMATIC_PEAKS
+
+    years = sorted(SYSTEMATIC_PEAKS)
+    codes = [None] * len(years)
+    codes[0] = "2,7"
+    codes[-1] = "6"
+    return pd.DataFrame(
+        {
+            "water_year": years,
+            "peak_flow_cfs": [SYSTEMATIC_PEAKS[y] for y in years],
+            "qualification_code": pd.array(codes, dtype="string"),
+        }
+    )
+
+
+class _RunFfaSpy:
+    """Stands in for run_ffa and records the keyword arguments it was given."""
+
+    def __init__(self, raises=None):
+        self.calls = []
+        self.raises = raises
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.raises is not None:
+            raise self.raises
+        return {
+            "b17c": None,
+            "converged": True,
+            "method": "ema",
+            "parameters": {"regional_skew_source": "user"},
+            "quantile_df": None,
+            "error": None,
+        }
+
+
+def _fit(app_module, **overrides):
+    kwargs = dict(
+        skew_source=app_module.SKEW_SOURCE_STATION,
+        regional_skew=None,
+        regional_skew_se=None,
+        pilf_override=0.0,
+        apply_peak_codes=True,
+        allow_regulated=False,
+    )
+    kwargs.update(overrides)
+    return app_module.run_site_ffa("03606500", _coded_peaks(), **kwargs)
+
+
+def _source(app_module):
+    return pathlib.Path(app_module.__file__).read_text(encoding="utf-8")
+
+
+class TestSkewSource:
+    """The sidebar's skew choice reaches run_ffa as exactly one flowfreq skew source."""
+
+    def test_no_nationwide_default_wording(self, app_module):
+        assert "Nationwide default" not in _source(app_module)
+
+    def test_choices_offered(self, app_module):
+        assert app_module.SKEW_SOURCE_CHOICES[0] == app_module.SKEW_SOURCE_PUBLISHED
+        assert "-0.302" in app_module.SKEW_SOURCE_FALLBACK
+
+    def test_published_study_value_reaches_run_ffa(self, app_module, monkeypatch):
+        from flowfreq.regional_skew import RegionalSkew
+
+        rs = RegionalSkew(
+            state="WA",
+            skew_region="Pacific Northwest",
+            skew=-0.07,
+            skew_mse=0.18,
+            citation="Mastin and others, 2016, SIR 2016-5118",
+        )
+        monkeypatch.setattr(app_module, "lookup_published_skew", lambda site_no: rs)
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        result = _fit(app_module, skew_source=app_module.SKEW_SOURCE_PUBLISHED)
+        call = spy.calls[0]
+        assert call["regional_skew"] == -0.07
+        assert call["regional_skew_se"] == pytest.approx(0.18**0.5)
+        assert "station_skew_only" not in call and "use_default_skew" not in call
+        assert result["skew_info"]["citation"].startswith("Mastin")
+        assert result["parameters"]["skew_note"] == "WA Pacific Northwest study"
+
+    def test_unavailable_study_is_an_error_not_a_fallback(self, app_module, monkeypatch):
+        from flowfreq.regional_skew import RegionalSkewUnavailable
+
+        def unavailable(site_no):
+            raise RegionalSkewUnavailable("No verified regional skew study covers HUC 0204.")
+
+        monkeypatch.setattr(app_module, "lookup_published_skew", unavailable)
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        result = _fit(app_module, skew_source=app_module.SKEW_SOURCE_PUBLISHED)
+        assert spy.calls == []
+        assert result["error_kind"] == "skew"
+        assert "No verified regional skew study covers HUC 0204." in result["error"]
+
+    def test_station_skew_only(self, app_module, monkeypatch):
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        _fit(app_module, skew_source=app_module.SKEW_SOURCE_STATION)
+        assert spy.calls[0]["station_skew_only"] is True
+        assert "regional_skew" not in spy.calls[0]
+
+    def test_custom_value(self, app_module, monkeypatch):
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        _fit(
+            app_module,
+            skew_source=app_module.SKEW_SOURCE_CUSTOM,
+            regional_skew=0.1,
+            regional_skew_se=0.3,
+        )
+        assert spy.calls[0]["regional_skew"] == 0.1
+        assert spy.calls[0]["regional_skew_se"] == 0.3
+
+    def test_unsourced_fallback_is_explicit(self, app_module, monkeypatch):
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        _fit(app_module, skew_source=app_module.SKEW_SOURCE_FALLBACK)
+        assert spy.calls[0]["use_default_skew"] is True
+
+    def test_fitted_skew_under_station_skew_only(self, app_module):
+        """skew_weighted is None there; the plots must use skew_used instead."""
+        params = {"skew_station": -0.19, "skew_weighted": None, "skew_used": -0.19}
+        assert app_module.fitted_skew(params) == -0.19
+        assert app_module.fitted_skew({"skew_weighted": -0.1}) == -0.1
+
+    def test_plots_do_not_read_skew_weighted_directly(self, app_module):
+        """A station-skew fit crashed the peak plot with float(None)."""
+        source = _source(app_module)
+        assert 'params["skew_weighted"]' not in source
+        assert 'params.get("skew_weighted"' not in source
+        assert "['skew_weighted']" not in source
+
+    def test_both_call_sites_pass_the_skew_choice(self, app_module):
+        assert _source(app_module).count("skew_source=skew_source,") == 2
+
+    def test_skew_choice_participates_in_the_refit_trigger(self, app_module):
+        source = _source(app_module)
+        start = source.index("current_ffa_inputs = (")
+        block = source[start : source.index(")", start)]
+        for name in ("skew_source", "apply_peak_codes", "allow_regulated"):
+            assert name in block
+
+
+class TestPeakCodes:
+    def test_codes_and_screen_inputs_reach_run_ffa(self, app_module, monkeypatch):
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        _fit(app_module, apply_peak_codes=False, allow_regulated=True)
+        call = spy.calls[0]
+        expected = _coded_peaks()["qualification_code"]
+        assert len(call["peak_codes"]) == len(expected)
+        assert list(call["peak_codes"].dropna()) == list(expected.dropna())
+        # Passed through unchanged: flowfreq >= 0.10.1 reads pd.NA as "no code".
+        assert call["peak_codes"].isna().iloc[1]
+        assert call["apply_peak_codes"] is False
+        assert call["allow_regulated"] is True
+        assert call["site_no"] == "03606500"
+
+    def test_refit_filters_codes_with_the_flows(self, app_module, monkeypatch):
+        """One year mask selects flows, years and codes, so they stay aligned."""
+        peaks = _coded_peaks()
+        start, end = int(peaks["water_year"].iloc[0]), int(peaks["water_year"].iloc[10])
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        _fit(app_module, start_year=start, end_year=end)
+        call = spy.calls[0]
+        expected = peaks.iloc[:11]
+        assert list(call["water_years"]) == list(expected["water_year"])
+        assert list(call["peak_flows"]) == list(expected["peak_flow_cfs"])
+        assert len(call["peak_codes"]) == 11
+        assert call["peak_codes"].iloc[0] == "2,7"
+        assert "6" not in list(call["peak_codes"].dropna())
+
+    def test_empty_year_range_is_an_error(self, app_module, monkeypatch):
+        spy = _RunFfaSpy()
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        result = _fit(app_module, start_year=1800, end_year=1801)
+        assert spy.calls == [] and result["error"]
+
+    def test_real_fit_reports_codes_applied(self, app_module):
+        """Unmocked: flowfreq applies the codes and returns its provenance.
+
+        The code 6 peak makes the screen class the gage regulated, so this fit
+        needs the override -- which is itself recorded.
+        """
+        result = _fit(app_module, allow_regulated=True)
+        assert result["error"] is None, result["error"]
+        params = result["parameters"]
+        assert params["regional_skew_source"] == "station"
+        assert params["peak_codes_applied"]  # code 7 and code 6 both acted on
+        assert "n_mgbt_outliers" in params
+        assert params["site_classification"]["site_no"] == "03606500"
+        assert params["site_classification"]["regulation_override"] is True
+
+    def test_real_code_6_peak_is_refused_without_the_override(self, app_module):
+        """Unmocked: run_ffa raises RegulatedRecordError; the app returns it as an error."""
+        result = _fit(app_module)
+        assert result["error_kind"] == "regulated"
+        assert "classified regulated" in result["error"]
+
+    def test_both_call_sites_pass_the_code_and_screen_choices(self, app_module):
+        # Two call sites, plus run_site_ffa's own run_ffa call.
+        source = _source(app_module)
+        assert source.count("apply_peak_codes=apply_peak_codes,") == 3
+        assert source.count("allow_regulated=allow_regulated,") == 3
+
+
+class TestRegulationScreen:
+    def test_refusal_becomes_a_displayable_error(self, app_module, monkeypatch):
+        from flowfreq.regulation import RegulatedRecordError
+
+        spy = _RunFfaSpy(raises=RegulatedRecordError("USGS 01426500 is classified regulated"))
+        monkeypatch.setattr(app_module, "run_ffa", spy)
+        result = _fit(app_module)
+        assert result["error_kind"] == "regulated"
+        assert "classified regulated" in result["error"]
+
+    def test_refusal_is_shown_with_the_override_hint(self, app_module, monkeypatch):
+        shown = []
+
+        class _St:
+            def error(self, msg):
+                shown.append(("error", msg))
+
+            def info(self, msg):
+                shown.append(("info", msg))
+
+        monkeypatch.setattr(app_module, "st", _St())
+        app_module.show_ffa_error(
+            "01426500", app_module._ffa_error("classified regulated", kind="regulated")
+        )
+        assert shown[0][0] == "error" and "classified regulated" in shown[0][1]
+        assert "Analyze anyway (regulated gage)" in shown[1][1]
+
+    def test_errors_display_with_the_gage_not_only_during_download(self, app_module):
+        """Download-loop messages are wiped by st.rerun(); the display loop must show them."""
+        source = _source(app_module)
+        start = source.index("# Generate/display plots for each gage")
+        assert "show_ffa_error(site_no" in source[start:]
+
+
+class TestDataSource:
+    def test_site_info_failure_does_not_block_the_download(self, app_module):
+        """flowfreq >= 0.10.1 reads site info from the Water Data API; a failure
+        there is logged and the download proceeds with the attributes unset."""
+        source = _source(app_module)
+        call = source.index("gage.fetch_site_info()")
+        assert "try:" in source[call - 60 : call]
+        assert "site_name, drainage_area = gage.site_name, gage.drainage_area" in source
+        assert "fill_site_metadata" not in source
+
+    def test_daily_download_does_not_use_legacy_por_dates(self, app_module):
+        """The legacy site catalog's first daily row can be another parameter.
+
+        For 12449500 it is water temperature, 2002-04-18 to 2002-09-29, which
+        cut the daily record to 165 days. flowfreq fetches the full record
+        when given no dates.
+        """
+        source = _source(app_module)
+        assert "daily_data = gage.download_daily_flow()" in source
+        assert "gage.daily_por_start" not in source
+
+    def test_api_key_is_mentioned(self, app_module):
+        assert "1,000 requests/hour" in _source(app_module)
+
+
+class TestComparisonExportFiltersErrors:
+    def test_failed_fits_are_left_out_of_the_comparison_export(self, app_module):
+        source = " ".join(_source(app_module).split())
+        block = source.split("site_results_for_export = {}")[1].split("export_comparison_csv")[0]
+        assert 'not st.session_state.ffa_results[ sno ].get("error")' in block

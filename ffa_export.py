@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from ffa_runner import skew_source_label
+
 try:
     from matplotlib.figure import Figure
 except ImportError:
@@ -56,12 +58,23 @@ def export_ffa_to_zip(
 
     # 3. LP3 parameters CSV
     params = ffa_results.get("parameters", {})
+    site_class = params.get("site_classification") or {}
     param_row = {
         "mean_log": params.get("mean_log"),
         "std_log": params.get("std_log"),
         "skew_station": params.get("skew_station"),
         "skew_weighted": params.get("skew_weighted"),
         "skew_used": params.get("skew_used"),
+        "regional_skew": params.get("regional_skew"),
+        "regional_skew_source": params.get("regional_skew_source"),
+        "skew_citation": params.get("skew_citation"),
+        "low_outlier_threshold": params.get("low_outlier_threshold"),
+        "low_outlier_source": params.get("low_outlier_source"),
+        "n_low_outliers": params.get("n_low_outliers"),
+        "n_mgbt_outliers": params.get("n_mgbt_outliers"),
+        "peak_codes_applied": _codes_str(params.get("peak_codes_applied")),
+        "site_class": site_class.get("site_class"),
+        "regulation_override": site_class.get("regulation_override"),
         "method": ffa_results.get("method"),
         "converged": ffa_results.get("converged"),
     }
@@ -101,7 +114,11 @@ def export_comparison_csv(
 
         # Extract 100-yr flow
         flow_100 = None
-        if quantile_df is not None:
+        if (
+            quantile_df is not None
+            and "Return Interval (yr)" in quantile_df.columns
+            and "Flow (cfs)" in quantile_df.columns
+        ):
             mask = quantile_df["Return Interval (yr)"] == 100.0
             matched = quantile_df.loc[mask, "Flow (cfs)"]
             if len(matched) > 0:
@@ -121,6 +138,9 @@ def export_comparison_csv(
                 "100-yr Flow (cfs)": flow_100,
                 "100-yr Flow/DA (cfs/sq mi)": flow_per_da,
                 "Weighted Skew": params.get("skew_weighted"),
+                "Skew Source": skew_source_label(params),
+                "PILFs": params.get("n_low_outliers"),
+                "MGBT Outliers": params.get("n_mgbt_outliers"),
                 "Method": ffa.get("method"),
                 "Converged": ffa.get("converged"),
             }
@@ -130,3 +150,10 @@ def export_comparison_csv(
     buf = io.StringIO()
     df.to_csv(buf, index=False)
     zf.writestr("comparison_summary.csv", buf.getvalue())
+
+
+def _codes_str(codes: Optional[Dict[str, int]]) -> Optional[str]:
+    """``{"7": 1, "6": 3}`` as ``"7:1; 6:3"`` for one CSV cell; ``""`` when none."""
+    if codes is None:
+        return None
+    return "; ".join(f"{code}:{n}" for code, n in codes.items())

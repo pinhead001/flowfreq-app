@@ -1,19 +1,21 @@
 """
 Streamlit app for USGS Daily Flow Hydrograph Generator
 
-Run with: streamlit run app/streamlit_app.py
+Run with: streamlit run streamlit_app.py
 """
 
 import io
-import sys
+import logging
+import os
 import zipfile
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 from scipy import stats
 
@@ -22,11 +24,336 @@ matplotlib.use("Agg")  # Use non-interactive backend
 # Import flowfreq
 from flowfreq import Hydrograph, __version__
 from flowfreq.freq_plot import plot_frequency_curve, plot_peak_flows_with_thresholds
+from flowfreq.regional_skew import RegionalSkew, RegionalSkewUnavailable, regional_skew_for_site
+from flowfreq.regulation import RegulatedRecordError
 from flowfreq.usgs import USGSgage
-from flowfreq.workflow import SKEW_OPTIONS, build_skew_curves_dict, compute_skew_tables, run_ffa
+from flowfreq.waterdata import API_KEY_ENV, set_api_key
+from flowfreq.workflow import (
+    B17C_DEFAULT_SKEW,
+    B17C_DEFAULT_SKEW_SE,
+    SKEW_OPTIONS,
+    build_skew_curves_dict,
+    compute_skew_tables,
+    run_ffa,
+)
 
 from ffa_export import export_comparison_csv, export_ffa_to_zip
-from ffa_runner import format_parameters_df, format_quantile_df
+from ffa_runner import format_parameters_df, format_quantile_df, skew_source_label
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Skew source and the per-site fit. Module-level functions rather than inline
+# script, so both run_ffa call sites (download and year-range refit) share one
+# path, and so tests can drive them without a Streamlit session.
+# ---------------------------------------------------------------------------
+
+SKEW_SOURCE_PUBLISHED = "Published regional study"
+SKEW_SOURCE_STATION = "Station skew only"
+SKEW_SOURCE_CUSTOM = "Custom value"
+SKEW_SOURCE_FALLBACK = f"Unsourced fallback ({B17C_DEFAULT_SKEW})"
+SKEW_SOURCE_CHOICES = (
+    SKEW_SOURCE_PUBLISHED,
+    SKEW_SOURCE_STATION,
+    SKEW_SOURCE_CUSTOM,
+    SKEW_SOURCE_FALLBACK,
+)
+
+
+@st.cache_data(show_spinner=False, ttl=24 * 3600)
+def lookup_published_skew(site_no: str) -> RegionalSkew:
+    """Published regional skew for a gage, cached per site.
+
+    Parameters
+    ----------
+    site_no : str
+        USGS site number.
+
+    Returns
+    -------
+    RegionalSkew
+
+    Raises
+    ------
+    RegionalSkewUnavailable
+        No verified study covers the gage. Exceptions are not cached.
+    requests.RequestException
+        The Water Data lookup failed.
+    """
+    return regional_skew_for_site(site_no)
+
+
+def resolve_skew_choice(
+    site_no: str,
+    skew_source: str,
+    regional_skew: Optional[float],
+    regional_skew_se: Optional[float],
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Turn the sidebar's skew choice into run_ffa keyword arguments.
+
+    Parameters
+    ----------
+    site_no : str
+        USGS site number, for the published-study lookup.
+    skew_source : str
+        One of :data:`SKEW_SOURCE_CHOICES`.
+    regional_skew, regional_skew_se : float or None
+        The custom value and its standard error; used only for
+        :data:`SKEW_SOURCE_CUSTOM`.
+
+    Returns
+    -------
+    tuple of dict
+        ``(run_ffa kwargs, provenance)``. Provenance has ``label``, ``note``
+        (short), ``citation``, ``advisory``, ``skew`` and ``skew_mse``.
+
+    Raises
+    ------
+    RegionalSkewUnavailable, requests.RequestException
+        From the published-study lookup. Deliberately not caught here: a gage
+        no study covers must not quietly get some other skew.
+    ValueError
+        An unknown ``skew_source``.
+    """
+    info: Dict[str, Any] = {
+        "label": skew_source,
+        "note": "",
+        "citation": "",
+        "advisory": "",
+        "skew": None,
+        "skew_mse": None,
+    }
+    if skew_source == SKEW_SOURCE_PUBLISHED:
+        rs = lookup_published_skew(site_no)
+        info.update(
+            note=f"{rs.state} {rs.skew_region} study",
+            citation=rs.citation,
+            advisory=rs.advisory,
+            skew=rs.skew,
+            skew_mse=rs.skew_mse,
+        )
+        return {"regional_skew": rs.skew, "regional_skew_se": float(np.sqrt(rs.skew_mse))}, info
+    if skew_source == SKEW_SOURCE_STATION:
+        return {"station_skew_only": True}, info
+    if skew_source == SKEW_SOURCE_CUSTOM:
+        se = float(regional_skew_se) if regional_skew_se is not None else None
+        info.update(
+            note="custom value",
+            citation="Custom value entered in the app",
+            skew=regional_skew,
+            skew_mse=se**2 if se is not None else None,
+        )
+        return {"regional_skew": regional_skew, "regional_skew_se": se}, info
+    if skew_source == SKEW_SOURCE_FALLBACK:
+        info.update(
+            citation="No located source; not a Bulletin 17C value",
+            skew=B17C_DEFAULT_SKEW,
+            skew_mse=B17C_DEFAULT_SKEW_SE**2,
+        )
+        return {"use_default_skew": True}, info
+    raise ValueError(f"Unknown skew source {skew_source!r}")
+
+
+def fitted_skew(params: Dict[str, Any]) -> float:
+    """The skew the fit actually used.
+
+    ``skew_weighted`` is None under station skew only, so it cannot stand in
+    for the fitted skew; ``skew_used`` is set whichever source was chosen.
+    """
+    for key in ("skew_used", "skew_weighted", "skew_station"):
+        value = params.get(key)
+        if value is not None:
+            return float(value)
+    return 0.0
+
+
+def _ffa_error(message: str, kind: str = "fit") -> Dict[str, Any]:
+    """A run_ffa-shaped result carrying only an error.
+
+    ``error_kind`` is ``"skew"``, ``"regulated"`` or ``"fit"``, so the display
+    can say what the user can do about it.
+    """
+    return {
+        "b17c": None,
+        "converged": False,
+        "method": None,
+        "parameters": {},
+        "quantile_df": pd.DataFrame(),
+        "error": message,
+        "error_kind": kind,
+    }
+
+
+def run_site_ffa(
+    site_no: str,
+    peak_df: pd.DataFrame,
+    *,
+    skew_source: str,
+    regional_skew: Optional[float],
+    regional_skew_se: Optional[float],
+    pilf_override: float,
+    apply_peak_codes: bool,
+    allow_regulated: bool,
+    start_year: Optional[int] = None,
+    end_year: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Fit one gage from the sidebar's choices. Never raises.
+
+    Parameters
+    ----------
+    site_no : str
+        USGS site number; passed to run_ffa so the regulation screen runs.
+    peak_df : pd.DataFrame
+        ``download_peak_flow`` output: ``water_year``, ``peak_flow_cfs`` and
+        ``qualification_code``.
+    skew_source, regional_skew, regional_skew_se
+        See :func:`resolve_skew_choice`.
+    pilf_override : float
+        PILF threshold override in cfs; 0 lets MGBT choose.
+    apply_peak_codes, allow_regulated : bool
+        Passed through to run_ffa.
+    start_year, end_year : int, optional
+        Water-year window. One mask selects the flows, the years and the
+        codes, so the three stay aligned.
+
+    Returns
+    -------
+    dict
+        run_ffa's result, plus ``skew_info`` (see :func:`resolve_skew_choice`)
+        and ``error_kind`` when ``error`` is set. On success
+        ``parameters["skew_note"]`` and ``parameters["skew_citation"]`` record
+        the study behind the skew for the tables and the export.
+    """
+    if start_year is not None and end_year is not None:
+        mask = (peak_df["water_year"] >= start_year) & (peak_df["water_year"] <= end_year)
+        peak_df = peak_df.loc[mask]
+    peak_df = peak_df.reset_index(drop=True)
+    if len(peak_df) == 0:
+        return _ffa_error(f"No peaks for USGS {site_no} in the selected year range.")
+
+    try:
+        skew_kwargs, skew_info = resolve_skew_choice(
+            site_no, skew_source, regional_skew, regional_skew_se
+        )
+    except RegionalSkewUnavailable as e:
+        return _ffa_error(
+            f"No published regional skew for USGS {site_no}: {e} Choose "
+            f"'{SKEW_SOURCE_STATION}', or '{SKEW_SOURCE_CUSTOM}' with a value from a study "
+            "that covers this gage.",
+            kind="skew",
+        )
+    except requests.RequestException as e:
+        return _ffa_error(f"Regional skew lookup failed for USGS {site_no}: {e}", kind="skew")
+
+    # flowfreq >= 0.10.1 reads None, NaN, pd.NA and "" alike as "no code".
+    peak_codes = peak_df["qualification_code"] if "qualification_code" in peak_df else None
+    try:
+        result = run_ffa(
+            peak_flows=peak_df["peak_flow_cfs"].values,
+            water_years=peak_df["water_year"].values.astype(int),
+            low_outlier_threshold_override=pilf_override or None,
+            peak_codes=peak_codes,
+            apply_peak_codes=apply_peak_codes,
+            site_no=site_no,
+            allow_regulated=allow_regulated,
+            **skew_kwargs,
+        )
+    except RegulatedRecordError as e:
+        return _ffa_error(str(e), kind="regulated")
+    except ValueError as e:
+        # run_ffa raises, rather than returns, calling errors: a skew choice it
+        # rejects, or peak codes it cannot combine with the other inputs.
+        return _ffa_error(str(e))
+
+    result["skew_info"] = skew_info
+    if result.get("error"):
+        result["error_kind"] = "fit"
+    else:
+        result["parameters"]["skew_note"] = skew_info["note"]
+        result["parameters"]["skew_citation"] = skew_info["citation"]
+    return result
+
+
+def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
+    """Show a failed or refused fit, with what the user can do about it."""
+    message = ffa_result.get("error")
+    if not message:
+        return
+    kind = ffa_result.get("error_kind", "fit")
+    if kind == "regulated":
+        st.error(f"Flood frequency analysis refused for USGS {site_no}: {message}")
+        st.info(
+            "To fit it anyway, tick **Analyze anyway (regulated gage)** under Flood "
+            "Frequency Analysis in the sidebar, then click Update Plots (or download again)."
+        )
+    elif kind == "skew":
+        st.error(f"Flood frequency analysis not run for USGS {site_no}: {message}")
+    else:
+        st.error(f"Flood frequency analysis failed for USGS {site_no}: {message}")
+
+
+def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
+    """Skew source, peak codes applied and regulation screen for a fitted gage."""
+    params = ffa_result.get("parameters", {})
+    info = ffa_result.get("skew_info") or {}
+    source = params.get("regional_skew_source")
+    st.markdown("**Skew Source**")
+    if source == "station":
+        st.write("Station skew only -- no regional weighting.")
+    elif source == "default":
+        st.warning(
+            f"Unsourced fallback skew {B17C_DEFAULT_SKEW} (SE {B17C_DEFAULT_SKEW_SE}). "
+            "It has no located source and is not a Bulletin 17C value."
+        )
+    else:
+        skew, mse = info.get("skew"), info.get("skew_mse")
+        value = f"{skew:.3f} (MSE {mse:.4f})" if skew is not None and mse else "n/a"
+        st.write(f"{info.get('label', 'Regional skew')}: {value}")
+        if info.get("citation"):
+            st.caption(info["citation"])
+        if info.get("advisory"):
+            st.warning(info["advisory"])
+    st.caption(f"flowfreq regional_skew_source: `{source}`")
+
+    codes = params.get("peak_codes_applied")
+    st.markdown("**NWIS Peak Codes Applied**")
+    if codes:
+        st.write(", ".join(f"code {c}: {n} peak(s)" for c, n in codes.items()))
+    elif codes is None:
+        st.write("n/a")
+    else:
+        st.write("None changed the fit.")
+
+    site_class = params.get("site_classification")
+    if site_class:
+        st.markdown("**Regulation Screen**")
+        line = f"Class: {site_class.get('site_class', 'unknown')}"
+        if site_class.get("regulation_override"):
+            st.warning(f"{line} -- fitted anyway (regulated-gage override).")
+        else:
+            st.write(line)
+        for reason in site_class.get("basis") or []:
+            st.caption(reason)
+
+
+def _configure_api_key() -> None:
+    """Pass a Water Data API key from Streamlit secrets to flowfreq, if one is set.
+
+    flowfreq reads ``USGS_API_KEY`` from the environment itself; this covers
+    Streamlit Community Cloud, where a key lives in the app's secrets.
+    """
+    if os.environ.get(API_KEY_ENV):
+        return
+    try:
+        key = st.secrets.get(API_KEY_ENV)
+    except Exception:  # no secrets.toml at all raises rather than returning None
+        return
+    if key:
+        set_api_key(str(key))
+
+
+_configure_api_key()
+
 
 st.set_page_config(
     page_title="USGS Hydrograph-erator",
@@ -46,12 +373,12 @@ st.sidebar.header("Input Parameters")
 input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
-    gage_input = st.sidebar.text_input("USGS Gage Number", value="09355500")
+    gage_input = st.sidebar.text_input("USGS Gage Number", value="12358500")
     gage_list = [gage_input.strip()] if gage_input else []
 else:
     gage_input = st.sidebar.text_area(
         "USGS Gage Numbers (one per line or comma-separated)",
-        value="09355500\n11066460",
+        value="12358500\n12449500",
         height=100,
     )
     # Parse input
@@ -101,19 +428,57 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("Flood Frequency Analysis")
 enable_ffa = st.sidebar.checkbox("Enable Flood Frequency Analysis", value=False)
 if enable_ffa:
-    regional_skew = st.sidebar.number_input(
-        "Regional Skew",
-        value=-0.302,
-        step=0.001,
-        format="%.3f",
-        help="Generalized skew from Bulletin 17C Appendix or regional study. Nationwide default: -0.302",
+    skew_source = st.sidebar.radio(
+        "Skew Source",
+        SKEW_SOURCE_CHOICES,
+        index=0,
+        help=(
+            "Bulletin 17C weights the station skew with a regional skew from a published "
+            "study and gives no national default. 'Published regional study' looks the "
+            "gage up in flowfreq's table of verified studies; where none covers it, the "
+            "fit stops and says so rather than substituting a number."
+        ),
     )
-    regional_skew_se = st.sidebar.number_input(
-        "Regional Skew SE",
-        value=0.55,
-        step=0.01,
-        format="%.2f",
-        help="Standard error of the regional skew estimate. Nationwide default: 0.55",
+    if skew_source == SKEW_SOURCE_CUSTOM:
+        regional_skew = st.sidebar.number_input(
+            "Regional Skew",
+            value=0.0,
+            step=0.001,
+            format="%.3f",
+            help="Generalized skew from a regional skew study that covers this gage.",
+        )
+        regional_skew_se = st.sidebar.number_input(
+            "Regional Skew SE",
+            min_value=0.01,
+            value=0.40,
+            step=0.01,
+            format="%.2f",
+            help="Standard error of that regional skew (the square root of its MSE).",
+        )
+    else:
+        regional_skew = None
+        regional_skew_se = None
+    if skew_source == SKEW_SOURCE_FALLBACK:
+        st.sidebar.warning(
+            f"{B17C_DEFAULT_SKEW} (SE {B17C_DEFAULT_SKEW_SE}) has no located source and is "
+            "not a Bulletin 17C value. Use it only for comparison with old runs."
+        )
+    apply_peak_codes = st.sidebar.checkbox(
+        "Apply NWIS peak codes",
+        value=True,
+        help=(
+            "Treat qualification codes as peakfq does: code 7 peaks are historic, "
+            "3/O/6/C peaks are removed. Untick to fit every peak as an exact value."
+        ),
+    )
+    allow_regulated = st.sidebar.checkbox(
+        "Analyze anyway (regulated gage)",
+        value=False,
+        help=(
+            "Gages classed regulated (GAGES-II dam storage, or peak code 6) are refused: "
+            "Bulletin 17C assumes unregulated flows. Tick to fit one anyway; the override "
+            "is recorded in the results and the export."
+        ),
     )
     show_freq_curve = st.sidebar.checkbox("Frequency Curve", value=True)
     if show_freq_curve:
@@ -151,8 +516,11 @@ if enable_ffa:
         ),
     )
 else:
-    regional_skew = -0.302
-    regional_skew_se = 0.55
+    skew_source = SKEW_SOURCE_PUBLISHED
+    regional_skew = None
+    regional_skew_se = None
+    apply_peak_codes = True
+    allow_regulated = False
     show_freq_curve = False
     label_max_on_freq = False
     show_peak_timeseries = False
@@ -165,6 +533,11 @@ else:
 
 # Download button
 download_data = st.sidebar.button("Download Data", type="primary")
+st.sidebar.caption(
+    "Data: USGS Water Data API. Without a key it allows 1,000 requests/hour per IP; "
+    f"set `{API_KEY_ENV}` (environment or Streamlit secrets) to raise the limit. "
+    "Free key: https://api.waterdata.usgs.gov/signup/"
+)
 
 # Initialize session state
 if "gage_data" not in st.session_state:
@@ -339,26 +712,28 @@ if download_data and gage_list:
         status_text.text(f"Fetching site info for {site_no}...")
 
         try:
-            # Create gage object and fetch site info (including POR)
             gage = USGSgage(site_no)
-            gage.fetch_site_info()
+            # Site info (name, drainage area) comes from the Water Data API
+            # since flowfreq 0.10.1. It is a nicety here, not a requirement:
+            # a failure leaves the attributes unset and the download proceeds.
+            try:
+                gage.fetch_site_info()
+            except Exception as e:
+                logger.warning("Site info lookup failed for %s: %s", site_no, e)
+            site_name, drainage_area = gage.site_name, gage.drainage_area
 
             status_text.text(f"Downloading data for {site_no}...")
 
-            # Download entire period of record using POR dates from site info
-            # USGS API returns limited data without date range, so use POR dates
-            start_dt = gage.daily_por_start if gage.daily_por_start else "1900-01-01"
-            end_dt = gage.daily_por_end if gage.daily_por_end else None
-            daily_data = gage.download_daily_flow(start_date=start_dt, end_date=end_dt)
+            # No dates: download_daily_flow requests the full period of record.
+            daily_data = gage.download_daily_flow()
 
             # Store gage info
-            site_name_display = gage.site_name or "Unknown"
             por_start_date = daily_data.index.min()
             por_end_date = daily_data.index.max()
 
             st.session_state.gage_info[site_no] = {
-                "name": site_name_display,
-                "drainage_area": gage.drainage_area,
+                "name": site_name or "Unknown",
+                "drainage_area": drainage_area,
                 "por_start": por_start_date,
                 "por_end": por_end_date,
                 "records": len(daily_data),
@@ -380,16 +755,19 @@ if download_data and gage_list:
                 if st.session_state.peak_data.get(site_no) is not None:
                     peak_df = st.session_state.peak_data[site_no]
                     with st.spinner(f"Running flood frequency analysis for {site_no}..."):
-                        ffa_result = run_ffa(
-                            peak_flows=peak_df["peak_flow_cfs"].values,
-                            water_years=peak_df["water_year"].values.astype(int),
+                        # Errors and a regulation refusal come back under
+                        # "error" and are shown with the gage's results; a
+                        # message here would vanish in the st.rerun() below.
+                        st.session_state.ffa_results[site_no] = run_site_ffa(
+                            site_no,
+                            peak_df,
+                            skew_source=skew_source,
                             regional_skew=regional_skew,
                             regional_skew_se=regional_skew_se,
-                            low_outlier_threshold_override=pilf_override or None,
+                            pilf_override=pilf_override,
+                            apply_peak_codes=apply_peak_codes,
+                            allow_regulated=allow_regulated,
                         )
-                        st.session_state.ffa_results[site_no] = ffa_result
-                    if ffa_result.get("error"):
-                        st.warning(f"FFA error for {site_no}: {ffa_result['error']}")
 
         except Exception as e:
             st.error(f"Error processing {site_no}: {str(e)}")
@@ -468,8 +846,11 @@ if st.session_state.gage_data:
                 peak_start_year,
                 peak_end_year,
                 pilf_override,
+                skew_source,
                 regional_skew,
                 regional_skew_se,
+                apply_peak_codes,
+                allow_regulated,
             )
             if st.session_state.prev_ffa_inputs != current_ffa_inputs:
                 st.session_state.prev_ffa_inputs = current_ffa_inputs
@@ -478,23 +859,20 @@ if st.session_state.gage_data:
                     for site_no in st.session_state.peak_data.keys():
                         peak_df = st.session_state.peak_data[site_no]
                         if peak_df is not None and len(peak_df) > 0:
-                            # Filter by year range
-                            if peak_start_year is not None and peak_end_year is not None:
-                                filtered_peak = peak_df[
-                                    (peak_df["water_year"] >= peak_start_year)
-                                    & (peak_df["water_year"] <= peak_end_year)
-                                ]
-                            else:
-                                filtered_peak = peak_df
-                            if len(filtered_peak) > 0:
-                                ffa_result = run_ffa(
-                                    peak_flows=filtered_peak["peak_flow_cfs"].values,
-                                    water_years=filtered_peak["water_year"].values.astype(int),
-                                    regional_skew=regional_skew,
-                                    regional_skew_se=regional_skew_se,
-                                    low_outlier_threshold_override=pilf_override or None,
-                                )
-                                st.session_state.ffa_results[site_no] = ffa_result
+                            # run_site_ffa filters flows, years and peak codes
+                            # by the same year mask, so the codes stay aligned.
+                            st.session_state.ffa_results[site_no] = run_site_ffa(
+                                site_no,
+                                peak_df,
+                                skew_source=skew_source,
+                                regional_skew=regional_skew,
+                                regional_skew_se=regional_skew_se,
+                                pilf_override=pilf_override,
+                                apply_peak_codes=apply_peak_codes,
+                                allow_regulated=allow_regulated,
+                                start_year=peak_start_year,
+                                end_year=peak_end_year,
+                            )
 
     # Generate/display plots for each gage
     for site_no in st.session_state.gage_data.keys():
@@ -532,6 +910,11 @@ if st.session_state.gage_data:
             f"**Records**<br><small>{len(plot_data):,} days</small>",
             unsafe_allow_html=True,
         )
+
+        # A failed or refused fit. Shown here, with the gage, rather than only
+        # during the download, whose messages the st.rerun() clears.
+        if enable_ffa and site_no in st.session_state.ffa_results:
+            show_ffa_error(site_no, st.session_state.ffa_results[site_no])
 
         # Generate plots if not cached or need refresh
         if site_no not in st.session_state.figures:
@@ -581,7 +964,7 @@ if st.session_state.gage_data:
                 else:
                     # lp3_params drives both the return-period reference lines
                     # and the max-peak annotation, since both derive from the
-                    # same fitted LP3 moments (mean_log/std_log/skew_weighted)
+                    # same fitted LP3 moments (mean_log/std_log/skew_used)
                     # -- only build it when at least one of the two is wanted
                     # and a real fit is available.
                     lp3_params = None
@@ -606,7 +989,7 @@ if st.session_state.gage_data:
                             lp3_params = (
                                 params["mean_log"],
                                 params["std_log"],
-                                params["skew_weighted"],
+                                fitted_skew(params),
                             )
 
                     # PILF cut actually applied to the fit, so the override is
@@ -669,7 +1052,7 @@ if st.session_state.gage_data:
                                     max_flow,
                                     params.get("mean_log", 0),
                                     params.get("std_log", 1),
-                                    params.get("skew_weighted", 0),
+                                    fitted_skew(params),
                                 )
                                 if params
                                 else None
@@ -717,6 +1100,8 @@ if st.session_state.gage_data:
                         use_container_width=True,
                     )
 
+                    show_fit_provenance(ffa_result)
+
                     if skew_tables:
                         for label, tbl in skew_tables.items():
                             st.markdown(
@@ -758,7 +1143,8 @@ if st.session_state.gage_data:
                         "Site No": sno,
                         "Site Name": attrs.get("name", sno),
                         "100-yr Flow (cfs)": f"{q100_val:,}" if q100_val else "N/A",
-                        "Weighted Skew": f"{r['parameters']['skew_weighted']:.3f}",
+                        "Skew Used": f"{fitted_skew(r['parameters']):.3f}",
+                        "Skew Source": skew_source_label(r["parameters"]),
                         "Method": r.get("method", "ema").upper(),
                         "Converged": "Yes" if r.get("converged") else "No",
                     }
@@ -873,7 +1259,7 @@ if st.session_state.gage_data:
                                                 max_flow,
                                                 params.get("mean_log", 0),
                                                 params.get("std_log", 1),
-                                                params.get("skew_weighted", 0),
+                                                fitted_skew(params),
                                             )
                                             if params
                                             else None
@@ -897,7 +1283,9 @@ if st.session_state.gage_data:
             if enable_ffa and len(selected_gages) > 1:
                 site_results_for_export = {}
                 for sno in selected_gages:
-                    if sno in st.session_state.ffa_results:
+                    if sno in st.session_state.ffa_results and not st.session_state.ffa_results[
+                        sno
+                    ].get("error"):
                         attrs = st.session_state.gage_info.get(sno, {})
                         site_results_for_export[sno] = {
                             "site_name": attrs.get("name", sno),
