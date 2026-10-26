@@ -163,7 +163,7 @@ def _show_estimate(estimate: SiteEstimate) -> None:
         )
     st.subheader(f"Estimate at {estimate.lat:.4f}, {estimate.lon:.4f} ({estimate.state})")
     st.caption(f"Method: {estimate.method}. Equation library: {estimate.library_status}.")
-    st.dataframe(_quantile_frame(estimate), hide_index=True, use_container_width=True)
+    st.dataframe(_quantile_frame(estimate), hide_index=True)
     with st.expander("Full report"):
         st.markdown(estimate.to_markdown())
     st.download_button(
