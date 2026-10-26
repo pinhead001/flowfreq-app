@@ -160,14 +160,10 @@ def test_download_payload_is_to_markdown(monkeypatch):
 
 
 def test_overlap_shows_candidate_selector():
-    at = _run(
+    at = _run_matching(
         {
-            "outcome": {
-                "error": "overlap",
-                "kind": "overlap",
-                "candidates": CANDIDATES,
-            },
-            "inputs": {"lat": 36.3, "lon": -87.0, "state": "TN", "aeps": [], "snapshot": True},
+            "outcome": {"error": "overlap", "kind": "overlap", "candidates": CANDIDATES},
+            "inputs": INPUTS,
         }
     )
     assert not at.exception
@@ -187,3 +183,76 @@ def test_page_wired_into_app(app_module=None):
 
     mod = importlib.import_module("streamlit_app")
     assert mod.ungaged_ui is ungaged_ui
+
+
+INPUTS = {
+    "lat": 36.3,
+    "lon": -87.0,
+    "state": "TN",
+    "aeps": [],
+    "snapshot": True,
+    "extrapolate": False,
+}
+
+
+def _seeded(result):
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["ungaged_result"] = result
+    at.run()
+    return at
+
+
+def test_stale_result_cleared_when_inputs_change():
+    result = {
+        "outcome": {"error": "overlap", "kind": "overlap", "candidates": CANDIDATES},
+        "inputs": INPUTS,
+    }
+    # Widgets default to lat/lon None, so they differ from the stored inputs.
+    at = _seeded(result)
+    assert not at.exception
+    assert not [s for s in at.selectbox if s.label == "Equation set"]
+    assert "ungaged_result" not in at.session_state
+
+
+def _run_matching(result):
+    """Run with the widgets set to INPUTS and ``result`` stored."""
+    at = AppTest.from_function(_page, default_timeout=30).run()
+    at.number_input[0].set_value(INPUTS["lat"])
+    at.number_input[1].set_value(INPUTS["lon"])
+    at.selectbox[0].set_value("TN")
+    at.checkbox[0].check()
+    at.session_state["ungaged_result"] = result
+    return at.run()
+
+
+def test_result_kept_when_inputs_match():
+    at = _run_matching(
+        {
+            "outcome": {"error": "overlap", "kind": "overlap", "candidates": CANDIDATES},
+            "inputs": INPUTS,
+        }
+    )
+    assert [s for s in at.selectbox if s.label == "Equation set"]
+
+
+def test_chosen_set_caption():
+    from types import SimpleNamespace
+
+    est = _estimate()
+    est.regions = [SimpleNamespace(code="GC2016", name="TN_Peakflow_Region_2_SIR_2024-5130")]
+    est.provenance = {
+        "options": {"region": "GC2016"},
+        "alternative_regions": [
+            {"code": "GC344", "year": 2003},
+            {"code": "GC2020", "year": 2025},
+        ],
+    }
+    text = ungaged_ui.chosen_set_caption(est)
+    assert text.startswith("Equation set chosen: GC2016 (TN_Peakflow_Region_2_SIR_2024-5130")
+    assert text.endswith("Not used: GC344 (2003), GC2020 (2025).")
+    at = _run({"outcome": {"estimate": est}})
+    assert any(text == c.value for c in at.caption)
+
+
+def test_no_caption_without_a_choice():
+    assert ungaged_ui.chosen_set_caption(_estimate()) == ""

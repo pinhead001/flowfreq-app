@@ -23,7 +23,7 @@ git ls-remote --tags https://github.com/pinhead001/flowfreq | grep v0.15.0
 Just `requirements.txt`, at the repository root:
 
 ```
-streamlit>=1.28.0
+streamlit>=1.29.0
 flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.15.0
 numpy>=1.20.0
 pandas>=1.3.0

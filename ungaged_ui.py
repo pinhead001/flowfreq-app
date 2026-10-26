@@ -155,6 +155,39 @@ def _quantile_frame(estimate: SiteEstimate) -> pd.DataFrame:
     )
 
 
+def chosen_set_caption(estimate: SiteEstimate) -> str:
+    """One line naming the equation set chosen from an overlap, or ``""`` if none was.
+
+    Built from ``provenance["options"]["region"]`` and
+    ``provenance["alternative_regions"]``.
+    """
+    region = (estimate.provenance.get("options") or {}).get("region")
+    alternatives = estimate.provenance.get("alternative_regions") or []
+    if not region:
+        return ""
+    used = next((r for r in estimate.regions if r.code == region), None)
+    if used is None and len(estimate.regions) == 1:
+        used = estimate.regions[0]
+    code = used.code if used is not None else region
+    detail = []
+    if used is not None and getattr(used, "name", ""):
+        detail.append(used.name)
+    for per_region in estimate.estimates.values():
+        for _, e in per_region:
+            year = e.equation.citation.year
+            if year:
+                detail.append(str(year))
+            break
+        break
+    text = f"Equation set chosen: {code}" + (f" ({', '.join(detail)})" if detail else "") + "."
+    if alternatives:
+        text += " Not used: " + ", ".join(
+            f"{a['code']} ({a['year']})" if a.get("year") else str(a["code"]) for a in alternatives
+        )
+        text += "."
+    return text
+
+
 def _show_estimate(estimate: SiteEstimate) -> None:
     if estimate.library_status == "nss_snapshot" or estimate.advisory:
         st.warning(
@@ -163,6 +196,9 @@ def _show_estimate(estimate: SiteEstimate) -> None:
         )
     st.subheader(f"Estimate at {estimate.lat:.4f}, {estimate.lon:.4f} ({estimate.state})")
     st.caption(f"Method: {estimate.method}. Equation library: {estimate.library_status}.")
+    chosen = chosen_set_caption(estimate)
+    if chosen:
+        st.caption(chosen)
     st.dataframe(_quantile_frame(estimate), hide_index=True)
     with st.expander("Full report"):
         st.markdown(estimate.to_markdown())
@@ -223,22 +259,27 @@ def render() -> None:
     elif badge == BADGE_SNAPSHOT and not snapshot:
         st.info(f"{state}: tick 'Allow NSS snapshot equations' to use its harvested set.")
 
+    current = {
+        "lat": None if lat is None else float(lat),
+        "lon": None if lon is None else float(lon),
+        "state": state,
+        "aeps": [float(a) for a in aeps],
+        "snapshot": bool(snapshot),
+        "extrapolate": bool(extrapolate),
+    }
+    stored = st.session_state.get(RESULT_KEY)
+    if stored and stored.get("inputs") is not None and stored["inputs"] != current:
+        # The widgets moved on: the result (and any overlap choice) belongs to old inputs.
+        del st.session_state[RESULT_KEY]
+        st.session_state.pop("ungaged_candidate", None)
+
     if st.button("Estimate", type="primary"):
         if lat is None or lon is None:
             st.session_state[RESULT_KEY] = {
                 "outcome": {"error": "Enter a latitude and a longitude.", "kind": "input"}
             }
         else:
-            _store(
-                {
-                    "lat": float(lat),
-                    "lon": float(lon),
-                    "state": state,
-                    "aeps": [float(a) for a in aeps],
-                    "snapshot": bool(snapshot),
-                    "extrapolate": bool(extrapolate),
-                }
-            )
+            _store(current)
 
     result = st.session_state.get(RESULT_KEY)
     if not result:
