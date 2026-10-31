@@ -7,8 +7,8 @@
   The basin map: MapLibre GL JS plus the Streamlit component protocol, by hand.
   No build step. Python side: map_component/__init__.py (args and value contract).
 -->
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
-<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: transparent;
     font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -73,6 +73,7 @@
   <button type="button" data-act="zoom">Zoom to point</button>
 </div>
 <div class="chips">
+  <div class="chip" id="chip-busy" hidden></div>
   <div class="chip" id="chip-grid" hidden></div>
   <div class="chip" id="chip-coverage" hidden>
     <span class="swatch" style="background:#2e9e4f"></span>verified
@@ -178,9 +179,6 @@ const JUMPS = {
   territories: [[[-67.5, 17.6], [-64.5, 18.6]], [[144.5, 13.2], [146.1, 20.6]], [[-171.1, -14.6], [-168.1, -11.0]]],
 };
 const EMPTY = { type: "FeatureCollection", features: [] };
-// The app's own URL (Streamlit passes it to the iframe): popup links must point at the
-// app, not at this component's index.html.
-const APP_URL = new URLSearchParams(location.search).get("streamlitUrl") || document.referrer || "/";
 const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
 
 // ---------------------------------------------------------------------------
@@ -302,8 +300,10 @@ function createMap(args) {
   shadeMode = args.mode;
   map = new maplibregl.Map({
     container: "map",
-    bounds: CONUS,
-    fitBoundsOptions: { padding: 10 },
+    // A remounted map (back from another page) opens where the user last clicked.
+    ...(args.view
+      ? { center: [args.view[1], args.view[0]], zoom: args.view[2] }
+      : { bounds: CONUS, fitBoundsOptions: { padding: 10 } }),
     attributionControl: { compact: true },
     renderWorldCopies: true,
     // No rotation: there is no compass to put north back.
@@ -408,6 +408,14 @@ function createMap(args) {
 }
 
 function emit(action, lngLat) {
+  if (action === "delineate" || action === "estimate") {
+    // StreamStats takes 10-30 s; say so here, where the user is looking. The next
+    // render (Python done) clears it.
+    const busy = document.getElementById("chip-busy");
+    busy.textContent = action === "delineate"
+      ? "Delineating with StreamStats (10-30 s)..." : "Delineating and estimating (10-30 s)...";
+    busy.hidden = false;
+  }
   setValue({ action, lat: lngLat.lat, lon: lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
 }
 
@@ -462,7 +470,11 @@ function scheduleGages() {
 
 async function updateGages() {
   const mine = ++gageSeq;
-  if (map.getZoom() < GAGE_MINZOOM) { map.getSource("gages").setData(EMPTY); return; }
+  if (map.getZoom() < GAGE_MINZOOM) {
+    map.getSource("gages").setData(EMPTY);
+    closePopups();  // its gage is no longer drawn
+    return;
+  }
   const b = map.getBounds(), r = (v, f) => f(v * 2) / 2;  // snap to a 0.5-degree grid
   const box = [r(b.getWest(), Math.floor), r(b.getSouth(), Math.floor),
                r(b.getEast(), Math.ceil), r(b.getNorth(), Math.ceil)];
@@ -489,21 +501,29 @@ async function updateGages() {
   map.getSource("gages").setData(gageCache.get(key));
 }
 
+function closePopups() {
+  document.querySelectorAll(".maplibregl-popup").forEach((el) => el.remove());
+}
+
 function openGagePopup(feature) {
   const id = String(feature.properties.STA_ID || "").trim();
   const name = String(feature.properties.STA_NAME || "").trim();
-  const app = new URL(APP_URL, location.href);
-  app.search = `?page=gage&site=${encodeURIComponent(id)}`;
   const root = document.createElement("div");
   const title = document.createElement("b");
   title.textContent = id;
   const label = document.createElement("div");
   label.textContent = name;  // a text node: names are data, never markup
   const links = document.createElement("div");
+  // The component iframe may not navigate the top window (its sandbox lacks
+  // allow-top-navigation), so the app switches page on an event instead.
   const page = document.createElement("a");
-  page.href = app.toString();
-  page.target = "_top";
+  page.href = "#";
   page.textContent = "Gage page";
+  page.addEventListener("click", (event) => {
+    event.preventDefault();
+    const c = map.getCenter().wrap();  // so "Back to the map" returns to this view
+    setValue({ action: "gage", site: id, lat: c.lat, lon: c.lng, zoom: map.getZoom(), nonce: ++nonce });
+  });
   const usgs = document.createElement("a");
   usgs.href = `https://waterdata.usgs.gov/monitoring-location/${encodeURIComponent(id)}/`;
   usgs.target = "_blank";
@@ -563,6 +583,7 @@ document.querySelector(".jump").addEventListener("click", (event) => {
   const stops = JUMPS[name], i = (jumpStep[name] || 0) % stops.length;
   jumpStep[name] = i + 1;
   closeMenu();
+  closePopups();
   map.fitBounds(stops[i], { padding: 20 });
 });
 
@@ -840,7 +861,13 @@ function applyAll(args, prev) {
   if (pendingMode && args.mode === pendingMode) pendingMode = null;
   if (!pendingMode && args.mode !== appliedMode) applyMode(args.mode);
   // Python's point wins: this also snaps the orb back when Python ignored a click.
-  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) applyPoint(args.point, appliedMode);
+  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) {
+    const typed = prev && args.point && !markerAt(args.point);  // not the echo of a click
+    applyPoint(args.point, appliedMode);
+    if (typed && !map.getBounds().contains([args.point[1], args.point[0]])) {
+      map.easeTo({ center: [args.point[1], args.point[0]], duration: 600 });
+    }
+  }
   if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
     applyCoverage(args.coverage, args.overlays);
   }
@@ -851,6 +878,7 @@ function applyAll(args, prev) {
 }
 
 function onRender(args) {
+  document.getElementById("chip-busy").hidden = true;  // Python has answered
   if (!map) {
     createMap(args);
     send("streamlit:setFrameHeight", { height: args.height });
@@ -862,10 +890,20 @@ function onRender(args) {
   last = args;
 }
 
-window.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
-});
-send("streamlit:componentReady", { apiVersion: 1 });
+if (typeof maplibregl === "undefined") {
+  // The CDN was unreachable or the file failed its integrity check: say so rather than
+  // leave a blank frame. The inputs below the map still work.
+  document.getElementById("map").innerHTML =
+    "<p style=\"padding:2em;font:14px sans-serif\">The map library could not be loaded " +
+    "(unpkg.com unreachable). Enter coordinates below the map instead.</p>";
+  send("streamlit:componentReady", { apiVersion: 1 });
+  send("streamlit:setFrameHeight", { height: 120 });
+} else {
+  window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+}
 </script>
 </body>
 </html>

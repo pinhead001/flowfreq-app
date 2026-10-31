@@ -76,46 +76,81 @@ def summarize_peaks(peaks: Optional[pd.DataFrame]) -> Optional[Dict[str, Any]]:
         "last": int(peaks["water_year"].max()),
         "count": int(len(peaks)),
         "max_cfs": None if top is None else int(top["peak_flow_cfs"]),
-        "max_date": None if top is None else pd.Timestamp(top["peak_date"]).strftime("%Y-%m-%d"),
+        "max_date": (
+            pd.Timestamp(top["peak_date"]).strftime("%Y-%m-%d")
+            if top is not None and pd.notna(top["peak_date"])
+            else None
+        ),
+    }
+
+
+class _Unreachable(Exception):
+    """USGS could not be reached; raised inside the cached fetchers so it is never cached."""
+
+
+@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def _fetch_site(site_no: str) -> Dict[str, Any]:
+    gage = USGSgage(site_no)
+    gage.fetch_site_info()
+    # fetch_site_info logs a failed request instead of raising it.
+    failure = getattr(gage, "_last_api_error", None)
+    found = gage.site_name or gage.daily_por_start is not None or gage.latitude is not None
+    if failure and not found:
+        raise _Unreachable(failure)
+    if not found:
+        return {}
+    return {
+        "site_no": site_no,
+        "name": gage.site_name or "",
+        "drainage_area": gage.drainage_area,
+        "state": gage.state_code,
+        "huc": gage.huc,
+        "lat": gage.latitude,
+        "lon": gage.longitude,
+        "daily_start": gage.daily_por_start,
+        "daily_end": gage.daily_por_end,
     }
 
 
 @st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
+def _fetch_peaks(site_no: str) -> Optional[pd.DataFrame]:
+    return USGSgage(site_no).download_peak_flow()
+
+
+def clear_caches() -> None:
+    """Forget every cached lookup (tests; and a user's explicit retry)."""
+    _fetch_site.clear()
+    _fetch_peaks.clear()
+
+
 def load_site(site_no: str) -> Dict[str, Any]:
     """The site's attributes and daily period of record. Never raises.
+
+    Answers are cached for :data:`CACHE_TTL_S`; failures are not, so a passing outage
+    is retried on the next view.
 
     Returns
     -------
     dict
         ``{"info": {...}}`` with ``site_no``, ``name``, ``drainage_area``, ``state``,
-        ``huc``, ``lat``, ``lon``, ``daily_start``, ``daily_end``; or ``{"error": str}``.
+        ``huc``, ``lat``, ``lon``, ``daily_start``, ``daily_end``; or ``{"error": str,
+        "kind": "missing" | "unreachable"}``.
     """
     try:
-        gage = USGSgage(site_no)
-        gage.fetch_site_info()
+        info = _fetch_site(site_no)
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.warning("site lookup failed for %s: %s", site_no, exc)
-        return {"error": f"Site lookup failed: {exc}"}
-    if not gage.site_name and gage.daily_por_start is None and gage.latitude is None:
-        return {"error": f"USGS has no monitoring location {site_no}."}
-    return {
-        "info": {
-            "site_no": site_no,
-            "name": gage.site_name or "",
-            "drainage_area": gage.drainage_area,
-            "state": gage.state_code,
-            "huc": gage.huc,
-            "lat": gage.latitude,
-            "lon": gage.longitude,
-            "daily_start": gage.daily_por_start,
-            "daily_end": gage.daily_por_end,
+        return {
+            "error": "USGS could not be reached just now. Try again in a minute.",
+            "kind": "unreachable",
         }
-    }
+    if not info:
+        return {"error": f"USGS has no monitoring location {site_no}.", "kind": "missing"}
+    return {"info": info}
 
 
-@st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
 def load_peaks(site_no: str) -> Dict[str, Any]:
-    """The site's annual peak flows. Never raises.
+    """The site's annual peak flows. Never raises; failures are not cached.
 
     Returns
     -------
@@ -123,10 +158,10 @@ def load_peaks(site_no: str) -> Dict[str, Any]:
         ``{"peaks": DataFrame}`` or ``{"error": str}``.
     """
     try:
-        peaks = USGSgage(site_no).download_peak_flow()
+        peaks = _fetch_peaks(site_no)
     except Exception as exc:  # noqa: BLE001 - shown on the page, never a traceback
         logger.warning("peak download failed for %s: %s", site_no, exc)
-        return {"error": f"Annual peaks could not be downloaded: {exc}"}
+        return {"error": "Annual peaks could not be downloaded just now. Try again in a minute."}
     if peaks is None or peaks.empty:
         return {"error": "USGS has no annual peak record for this site."}
     return {"peaks": peaks}
@@ -145,7 +180,8 @@ def _record_frame(info: Dict[str, Any], summary: Optional[Dict[str, Any]]) -> pd
     ]
     if summary is not None:
         largest = (
-            f"largest {summary['max_cfs']:,} cfs on {summary['max_date']}"
+            f"largest {summary['max_cfs']:,} cfs"
+            + (f" on {summary['max_date']}" if summary["max_date"] else "")
             if summary["max_cfs"] is not None
             else ""
         )
@@ -164,15 +200,22 @@ def _record_frame(info: Dict[str, Any], summary: Optional[Dict[str, Any]]) -> pd
 def peak_chart(peaks: pd.DataFrame) -> alt.Chart:
     """Annual peaks as bars on a numeric water-year axis, so gaps in the record show."""
     data = peaks.dropna(subset=["peak_flow_cfs"]).assign(
-        peak_date=lambda d: pd.to_datetime(d["peak_date"]).dt.strftime("%Y-%m-%d"),
+        peak_date=lambda d: pd.to_datetime(d["peak_date"]).dt.strftime("%Y-%m-%d").fillna(""),
         qualification_code=lambda d: d["qualification_code"].astype("string").fillna(""),
     )
+    data["kind"] = data["qualification_code"].map(peak_kind)
     return (
         alt.Chart(data)
         .mark_bar(size=3)
         .encode(
             x=alt.X("water_year:Q", title="Water year", axis=alt.Axis(format="d")),
             y=alt.Y("peak_flow_cfs:Q", title="Peak flow (cfs)"),
+            color=alt.Color(
+                "kind:N",
+                title=None,
+                scale=alt.Scale(domain=list(PEAK_KINDS), range=list(PEAK_KINDS.values())),
+                legend=alt.Legend(orient="top"),
+            ),
             tooltip=[
                 alt.Tooltip("water_year:Q", title="Water year", format="d"),
                 alt.Tooltip("peak_date:N", title="Date"),
@@ -182,6 +225,37 @@ def peak_chart(peaks: pd.DataFrame) -> alt.Chart:
         )
         .properties(height=260)
     )
+
+
+#: Bar categories for the peak chart, with their colours. Codes are USGS peak
+#: qualification codes: 7 historic peak; 5 and 6 affected by regulation or diversion;
+#: C affected by urbanization or channelization.
+PEAK_KINDS = {
+    "No code": "#1f77b4",
+    "Historic (code 7)": "#9467bd",
+    "Regulated or diverted (5, 6)": "#d62728",
+    "Urbanized (C)": "#ff7f0e",
+    "Other code": "#7f7f7f",
+}
+
+
+def peak_kind(codes: str) -> str:
+    """The chart category for a peak's comma-separated qualification codes."""
+    found = {c.strip() for c in str(codes or "").split(",") if c.strip()}
+    if not found:
+        return "No code"
+    if "7" in found:
+        return "Historic (code 7)"
+    if found & {"5", "6"}:
+        return "Regulated or diverted (5, 6)"
+    if "C" in found:
+        return "Urbanized (C)"
+    return "Other code"
+
+
+def back_button() -> None:
+    """The same-tab "Back to the map" control."""
+    st.button("\u2190 Back to the map", on_click=_go, args=("ungaged",), key="back_to_map")
 
 
 def _go(page: str, site_no: Optional[str] = None) -> None:
@@ -202,24 +276,31 @@ def _links(site_no: str) -> str:
 def _actions(site_no: str, can_run: bool) -> None:
     col_run, col_links = st.columns([1, 2], vertical_alignment="center")
     col_run.button(
-        "Run Bulletin 17C on this site",
+        "Open in Bulletin 17C (Gaged page)",
         type="primary",
         disabled=not can_run,
         on_click=_go,
         args=("gaged", site_no),
-        help="Opens the Gaged page with this site filled in.",
+        help=(
+            "Opens the Gaged page with this site filled in and flood frequency analysis "
+            "ticked; press Download Data there to run it."
+            if can_run
+            else "Needs an annual peak record."
+        ),
     )
     col_links.markdown(_links(site_no))
 
 
 def render(site_no: str) -> None:
     """Draw the gage page for one validated site number."""
-    st.button("\u2190 Back to the map", on_click=_go, args=("ungaged",), type="tertiary")
+    back_button()
     with st.spinner(f"Looking up USGS {site_no}..."):
         site = load_site(site_no)
     if "error" in site:
         st.header(f"USGS {site_no}")
         st.error(site["error"])
+        if site.get("kind") == "unreachable":
+            st.button("Try again", on_click=clear_caches)
         _actions(site_no, can_run=False)
         return
     info = site["info"]
@@ -246,12 +327,12 @@ def render(site_no: str) -> None:
         st.subheader("Annual peak flows")
         st.altair_chart(peak_chart(peaks["peaks"]))
         st.caption(
-            "Bars are the annual peaks as USGS reports them, before any qualification code "
-            "is applied. Bulletin 17C, with peak codes, low-outlier tests and skew, is on the "
-            "Gaged page."
+            "Bars are the annual peaks as USGS reports them, coloured by qualification code. "
+            "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Gaged "
+            "page."
         )
 
-    _actions(site_no, can_run=True)
+    _actions(site_no, can_run="peaks" in peaks)
     with st.expander("Coming to this page"):
         st.markdown(
             "- Summary hydrograph and flow-duration curve from the daily record\n"

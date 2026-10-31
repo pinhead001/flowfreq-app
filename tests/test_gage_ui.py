@@ -61,18 +61,83 @@ def test_record_years():
     assert gage_ui.record_years(None, "2026-10-29") is None
 
 
+class _FakeGage:
+    """Stands in for USGSgage: ``mode`` is "ok", "empty" (no such site) or "down"."""
+
+    mode = "ok"
+
+    def __init__(self, site):
+        self.site_no = site
+        self.site_name = self.drainage_area = self.state_code = self.huc = None
+        self.latitude = self.longitude = self.daily_por_start = self.daily_por_end = None
+        self._last_api_error = None
+
+    def fetch_site_info(self):
+        if _FakeGage.mode == "ok":
+            self.site_name, self.latitude, self.longitude = "Clark Fork", 46.9, -113.9
+        elif _FakeGage.mode == "down":
+            # The library logs a failed request instead of raising it.
+            self._last_api_error = "HTTPSConnectionPool(host='api.waterdata.usgs.gov'): Max retries"
+
+    def download_peak_flow(self):
+        if _FakeGage.mode == "down":
+            raise ConnectionError("HTTPSConnectionPool(host='api.waterdata.usgs.gov'): Max retries")
+        return PEAKS
+
+
+@pytest.fixture
+def fake_gage(monkeypatch):
+    monkeypatch.setattr(gage_ui, "USGSgage", _FakeGage)
+    gage_ui.clear_caches()
+    _FakeGage.mode = "ok"
+    yield _FakeGage
+    gage_ui.clear_caches()
+
+
 def test_load_site_never_raises(monkeypatch):
     class Broken:
         def __init__(self, site):
             raise RuntimeError("API down")
 
     monkeypatch.setattr(gage_ui, "USGSgage", Broken)
-    out = (
-        gage_ui.load_site.__wrapped__(SITE)
-        if hasattr(gage_ui.load_site, "__wrapped__")
-        else (gage_ui.load_site(SITE))
-    )
-    assert "error" in out and "API down" in out["error"]
+    gage_ui.clear_caches()
+    out = gage_ui.load_site(SITE)
+    assert "error" in out
+
+
+def test_unreachable_usgs_is_not_called_a_missing_site(fake_gage):
+    fake_gage.mode = "down"
+    out = gage_ui.load_site(SITE)
+    assert out.get("kind") == "unreachable"
+    assert "no monitoring location" not in out["error"]
+    assert "HTTPSConnectionPool" not in out["error"]  # the detail goes to the log
+
+
+def test_a_failure_is_not_cached(fake_gage):
+    fake_gage.mode = "down"
+    assert "error" in gage_ui.load_site(SITE)
+    assert "error" in gage_ui.load_peaks(SITE)
+    fake_gage.mode = "ok"
+    assert gage_ui.load_site(SITE)["info"]["name"] == "Clark Fork"
+    assert "peaks" in gage_ui.load_peaks(SITE)
+
+
+def test_an_unknown_site_says_so(fake_gage):
+    fake_gage.mode = "empty"
+    out = gage_ui.load_site(SITE)
+    assert out.get("kind") == "missing" and "no monitoring location" in out["error"]
+
+
+def test_summarize_peaks_tolerates_a_missing_date():
+    odd = PEAKS.assign(peak_date=[pd.NaT, PEAKS["peak_date"][1], PEAKS["peak_date"][2]])
+    assert gage_ui.summarize_peaks(odd)["max_date"] is None
+
+
+def test_peak_chart_colours_bars_by_qualification():
+    spec = gage_ui.peak_chart(PEAKS).to_dict()
+    assert spec["encoding"]["color"]["field"] == "kind"
+    kinds = {row["kind"] for row in spec["datasets"][next(iter(spec["datasets"]))]}
+    assert "Historic (code 7)" in kinds and "No code" in kinds
 
 
 def _page():
@@ -122,7 +187,7 @@ def test_page_links_to_usgs(monkeypatch):
 
 def test_b17c_button_opens_the_gaged_page_in_the_same_tab(monkeypatch):
     at = _run(monkeypatch)
-    [b for b in at.button if b.label == "Run Bulletin 17C on this site"][0].click()
+    [b for b in at.button if b.label.startswith("Open in Bulletin 17C")][0].click()
     at.run()
     assert at.query_params["page"] == ["gaged"] or at.query_params["page"] == "gaged"
     assert SITE in str(at.query_params["site"])
@@ -152,3 +217,9 @@ def test_page_without_peaks_still_shows_the_site(monkeypatch):
     assert not at.exception
     assert any("Clark Fork" in h.value for h in at.header)
     assert any("no peaks" in w.value for w in at.warning)
+
+
+def test_b17c_button_is_disabled_without_peaks(monkeypatch):
+    at = _run(monkeypatch, peaks=None)
+    button = [b for b in at.button if b.label.startswith("Open in Bulletin 17C")][0]
+    assert button.disabled

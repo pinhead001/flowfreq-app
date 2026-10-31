@@ -573,7 +573,8 @@ def test_delineation_result_shows_caption_and_download_no_table(monkeypatch, rec
     outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
     at, stub = _seeded_matching(monkeypatch, outcome)
     assert not at.exception
-    assert any("142.3 sq mi" in c.value and "Press Estimate" in c.value for c in at.caption)
+    # The summary line sits just under the map, where the user is looking.
+    assert any("142.3 sq mi" in m.value and "Press Estimate" in m.value for m in at.success)
     assert not at.dataframe
     assert "Download basin (GeoJSON)" in _labels(at)
     assert stub.calls[-1]["basin"] is BASIN
@@ -747,3 +748,64 @@ def test_compare_shows_a_failed_state_in_its_tab(monkeypatch, recorders):
     at.run()
     assert not at.exception
     assert any("WY: no equations" in e.value for e in at.error)
+
+
+# --- Second review ------------------------------------------------------------------
+
+
+def test_gage_event_opens_the_gage_page(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, {"action": "gage", "site": "12340500", "nonce": 9})
+    assert not at.exception
+    assert "gage" in str(at.query_params["page"])
+    assert "12340500" in str(at.query_params["site"])
+
+
+def test_gage_event_with_a_bad_site_is_ignored(monkeypatch, recorders, caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, {"action": "gage", "site": "<b>", "nonce": 9})
+    assert "page" not in at.query_params
+
+
+def test_the_map_reopens_where_the_user_was(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, _event("point", lat=46.87, lon=-113.99))
+    at.run()
+    assert stub.calls[-1]["view"] == (46.87, -113.99, 9.0)
+
+
+def test_a_typed_edit_clears_the_drawn_basin(monkeypatch, recorders):
+    outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+    at, stub = _seeded_matching(monkeypatch, outcome)
+    assert stub.calls[-1]["basin"] is BASIN
+    at.number_input[0].set_value(45.5)
+    at.run()
+    assert stub.calls[-1]["basin"] is None
+
+
+def test_delineate_outside_the_jurisdictions_is_refused(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("delineate", lat=27.0, lon=-89.0))
+    assert not at.exception
+    assert recorders["delineate"] == []
+    assert any("outside" in w.value for w in at.warning)
+
+
+def test_a_failure_shows_once_just_below_the_map(monkeypatch, recorders):
+    def unsnappable(*a, **k):
+        raise UnsnappablePointError("could not snap to a stream")
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", unsnappable)
+    at, _ = _with_map(monkeypatch, _event("delineate"))
+    errors = [e.value for e in at.error if "could not snap" in e.value]
+    assert len(errors) == 1
+
+
+def test_gage_event_remembers_where_the_map_was(monkeypatch, recorders):
+    event = {
+        "action": "gage",
+        "site": "12340500",
+        "lat": 44.7,
+        "lon": -110.6,
+        "zoom": 9.5,
+        "nonce": 9,
+    }
+    at, _ = _with_map(monkeypatch, event)
+    assert at.session_state["map_view"] == (44.7, -110.6, 9.5)

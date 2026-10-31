@@ -511,3 +511,36 @@ def test_gaged_param_prefills_the_gage_number():
     at = _app_with({"page": "gaged", "site": "12340500"})
     assert not at.exception
     assert at.text_input[0].value == "12340500"
+
+
+def test_gaged_param_ticks_ffa_and_says_what_to_do():
+    at = _app_with({"page": "gaged", "site": "12340500"})
+    assert not at.exception
+    ffa = [c for c in at.checkbox if c.label == "Enable Flood Frequency Analysis"][0]
+    assert ffa.value is True
+    assert any("12340500" in i.value and "Download Data" in i.value for i in at.info)
+
+
+def test_map_and_gage_pages_have_their_own_titles():
+    at = _app_with({"page": "ungaged"})
+    assert not [t for t in at.title if "Hydrograph-erator" in t.value]
+
+
+def test_bad_site_page_uses_the_back_button():
+    at = _app_with({"page": "gage", "site": "12"})
+    assert [b for b in at.button if "Back to the map" in b.label]
+
+
+def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
+    at = _app_with({"page": "ungaged"})
+    at.number_input(key="ungaged_lat").set_value(46.87)
+    at.number_input(key="ungaged_lon").set_value(-113.99)
+    at.run()
+    # Streamlit drops the state of widgets a run does not draw, as on the Gaged page.
+    at.sidebar.radio[0].set_value("Gaged site")
+    at.run()
+    at.sidebar.radio[0].set_value("Ungaged site")
+    at.run()
+    assert not at.exception
+    assert at.number_input(key="ungaged_lat").value == 46.87
+    assert at.number_input(key="ungaged_lon").value == -113.99

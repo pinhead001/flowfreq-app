@@ -19,8 +19,8 @@ Use a real stream: Rattlesnake Creek above Missoula, MT (46.93, -113.97).
 ## Layers by zoom
 
 - [ ] Zoom 8 over Yellowstone: hollow triangles (streamgages)
-- [ ] Clicking a triangle opens a popup: site number, name, "Gage page" (opens
-      `?page=gage&site=...` in the app) and "USGS" (new tab)
+- [ ] Clicking a triangle opens a popup: site number, name, "Gage page" (switches this tab
+      to the gage page; "Back to the map" returns to the same view) and "USGS" (new tab)
 - [ ] Zoom 13 over Montana: StreamGrid cells appear; the chip reads "StreamGrid: click a lit
       cell"
 - [ ] Zoom 13 over Florida: the chip reads "no StreamStats grid for FL"
@@ -33,6 +33,9 @@ Use a real stream: Rattlesnake Creek above Missoula, MT (46.93, -113.97).
 
 ## Clicks
 
+- [ ] Delineate or Estimate from the menu shows "Delineating with StreamStats (10-30 s)" on the
+      map, then the outcome just under the map
+- [ ] A typed point outside the view pans the map to it
 - [ ] Left click fills latitude, longitude and jurisdiction; the orb moves at once; nothing
       runs
 - [ ] Typing a latitude moves the orb

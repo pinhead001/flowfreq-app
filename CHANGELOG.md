@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Basin map on the Ungaged-site page, flowfreq v0.18.0
 
 The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
-`SiteEstimate.basin_geojson`. The Streamlit floor rises to 1.40 (`st.segmented_control`).
+`SiteEstimate.basin_geojson`. The Streamlit floor rises to 1.40.
 
 - **Map above the inputs**, opening on CONUS with jump buttons to Alaska, Hawaii and the
   territories (PR/USVI, Guam/CNMI, American Samoa). Three styles: **DEM** (pixelated,
@@ -28,8 +28,7 @@ The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
   list. State and territory lines; an optional tint by equation coverage (verified / partial / snapshot).
 - **StreamStats StreamGrid** from zoom 13: the cells that will snap and delineate, with a
   chip naming states that have no grid.
-- **Streamgages** from zoom 8 as hollow triangles; a popup links the gage page (a
-  placeholder for now, `?page=gage&site=`) and the USGS monitoring-location page.
+- **Streamgages** from zoom 8 as hollow triangles; a popup opens the gage page and the USGS monitoring-location page.
 - **Left click** fills latitude, longitude and the jurisdiction under the point; nothing
   runs until Estimate. **Right click**: Delineate (basin only), Estimate (basin and
   quantiles), Copy lat/lon, Zoom to point. Typed coordinates move the pulsing marker.

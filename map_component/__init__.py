@@ -18,8 +18,10 @@ zoom-to-point never reach Python.
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import streamlit.components.v1 as components
 
@@ -30,23 +32,57 @@ MODES: Tuple[str, ...] = ("dem", "night", "green")
 
 _component = components.declare_component("basin_map", path=str(Path(__file__).parent))
 
-#: Prepared (rounded, fingerprinted) basins by the identity of the caller's Feature. A
-#: stored result keeps the same object across reruns, so it is prepared once, not on every
-#: widget touch. Each entry keeps its source so a recycled ``id`` cannot match.
-_PREPARED: Dict[int, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
-_PREPARED_MAX = 16
+
+class IdentityCache:
+    """Values computed once per object, keyed by the object's identity; thread-safe.
+
+    For per-result work the page repeats on every rerun: a stored result keeps the same
+    objects across reruns, so each is computed once. Each entry holds its key object, so
+    a recycled ``id`` can never match a different one. Shared by every session's thread,
+    hence the lock.
+
+    Parameters
+    ----------
+    maxsize : int
+        Entries kept; the oldest is dropped first.
+    """
+
+    def __init__(self, maxsize: int = 16) -> None:
+        self._maxsize = maxsize
+        self._entries: "OrderedDict[int, Tuple[Any, Any]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def clear(self) -> None:
+        """Forget every entry."""
+        with self._lock:
+            self._entries.clear()
+
+    def get(self, obj: Any, make: Callable[[Any], Any]) -> Any:
+        """The value for ``obj``, computing it with ``make(obj)`` the first time."""
+        with self._lock:
+            hit = self._entries.get(id(obj))
+            if hit is not None and hit[0] is obj:
+                return hit[1]
+        value = make(obj)  # outside the lock: it may be slow
+        with self._lock:
+            self._entries[id(obj)] = (obj, value)
+            while len(self._entries) > self._maxsize:
+                self._entries.popitem(last=False)
+        return value
+
+
+def _prepare(basin: Dict[str, Any]) -> Dict[str, Any]:
+    sent = round_coords(basin)
+    sent["properties"]["hash"] = geojson_hash(sent)
+    return sent
+
+
+#: Prepared (rounded, fingerprinted) basins, one per stored Feature.
+_PREPARED = IdentityCache()
 
 
 def _prepared(basin: Dict[str, Any]) -> Dict[str, Any]:
-    hit = _PREPARED.get(id(basin))
-    if hit is not None and hit[0] is basin:
-        return hit[1]
-    sent = round_coords(basin)
-    sent["properties"]["hash"] = geojson_hash(sent)
-    if len(_PREPARED) >= _PREPARED_MAX:
-        _PREPARED.pop(next(iter(_PREPARED)))
-    _PREPARED[id(basin)] = (basin, sent)
-    return sent
+    return _PREPARED.get(basin, _prepare)
 
 
 def _pair(value: Optional[Tuple[float, float]]) -> Optional[list]:
@@ -62,6 +98,7 @@ def prepare_args(
     overlays: frozenset,
     coverage: Mapping[str, str],
     height: int,
+    view: Optional[Tuple[float, float, float]] = None,
 ) -> Dict[str, Any]:
     """Turn the page's state into the JSON the component receives.
 
@@ -83,6 +120,9 @@ def prepare_args(
         Jurisdiction code to its coverage badge, for the coverage tint.
     height : int
         Frame height in pixels.
+    view : (lat, lon, zoom), optional
+        Where a newly mounted map opens (the last place the user clicked), instead of
+        CONUS. Ignored once the map exists, so it never fights the user's panning.
 
     Returns
     -------
@@ -104,6 +144,7 @@ def prepare_args(
         "overlays": sorted(overlays),
         "coverage": dict(coverage),
         "height": int(height),
+        "view": None if view is None else [float(v) for v in view],
     }
 
 
@@ -116,6 +157,7 @@ def basin_map(
     overlays: frozenset,
     coverage: Mapping[str, str],
     height: int = 520,
+    view: Optional[Tuple[float, float, float]] = None,
     key: str = "basin_map",
 ) -> Optional[Dict[str, Any]]:
     """Draw the basin map and return its latest event.
@@ -136,5 +178,6 @@ def basin_map(
         overlays=overlays,
         coverage=coverage,
         height=height,
+        view=view,
     )
     return _component(**args, key=key, default=None)

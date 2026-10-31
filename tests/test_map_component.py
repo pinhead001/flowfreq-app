@@ -77,7 +77,7 @@ def test_html_declares_all_three_actions():
 
 
 def test_html_gage_popup_links():
-    assert "?page=gage&site=" in HTML
+    assert 'textContent = "Gage page"' in HTML  # opens the app's gage page (see below)
     assert "https://waterdata.usgs.gov/monitoring-location/" in HTML
 
 
@@ -211,3 +211,62 @@ def test_html_starts_with_the_attribution_collapsed():
 def test_html_lightens_huc_lines_when_zoomed_out():
     # HUC2 regions fill the CONUS view; they fade up to full strength by zoom 8.
     assert "3, r.opacity * 0.45, 8, r.opacity" in HTML
+
+
+# --- Second review: map ---------------------------------------------------------------
+
+
+def test_html_gage_link_goes_through_python_not_top_navigation():
+    # The component iframe may not navigate the top window (no allow-top-navigation).
+    assert 'target = "_top"' not in HTML
+    assert 'action: "gage"' in HTML
+
+
+def test_html_reopens_at_the_last_view():
+    assert "args.view" in HTML
+
+
+def test_html_shows_progress_while_streamstats_works():
+    assert 'id="chip-busy"' in HTML
+
+
+def test_html_closes_popups_when_the_view_jumps_away():
+    assert "closePopups()" in HTML
+
+
+def test_html_brings_a_typed_point_into_view():
+    assert "easeTo" in HTML
+
+
+def test_html_guards_the_maplibre_load():
+    assert re.search(r'maplibre-gl\.js" integrity="sha384-[A-Za-z0-9+/=]+"', HTML)
+    assert "typeof maplibregl" in HTML
+
+
+def test_prepare_args_passes_the_view():
+    assert _args(view=(46.87, -113.99, 9.0))["view"] == [46.87, -113.99, 9.0]
+    assert _args()["view"] is None
+
+
+def test_identity_cache_is_bounded_and_keyed_by_object():
+    cache = map_component.IdentityCache(maxsize=2)
+    a, b, c = {"n": 1}, {"n": 2}, {"n": 3}
+    calls = []
+    make = lambda obj: calls.append(obj) or obj["n"] * 10  # noqa: E731
+    assert cache.get(a, make) == 10 and cache.get(a, make) == 10
+    assert len(calls) == 1
+    cache.get(b, make)
+    cache.get(c, make)  # evicts a
+    cache.get(a, make)
+    assert len(calls) == 4
+    assert cache.get({"n": 1}, make) == 10 and len(calls) == 5  # equal is not the same object
+
+
+def test_identity_cache_survives_concurrent_eviction():
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache = map_component.IdentityCache(maxsize=4)
+    objs = [{"i": i} for i in range(400)]
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda o: cache.get(o, lambda x: x["i"]), objs))
+    assert results == list(range(400))
