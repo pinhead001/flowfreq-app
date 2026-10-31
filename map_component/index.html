@@ -29,12 +29,39 @@
   .swatch { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 8px;
     vertical-align: -1px; border-radius: 2px; }
   .swatch:first-child { margin-left: 0; }
-  .maplibregl-ctrl-attrib { background: var(--chip-bg) !important; color: var(--chip-fg); }
-  .maplibregl-ctrl-attrib a { color: var(--chip-fg); }
+  .jump { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; z-index: 2; }
+  .jump button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
+    background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
+  .jump button:hover, .menu button:hover { filter: brightness(1.25); }
+  .menu { position: absolute; z-index: 3; display: flex; flex-direction: column; min-width: 170px;
+    background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; }
+  .menu[hidden] { display: none; }
+  .menu .head { padding: 6px 10px; color: var(--chip-fg); opacity: .75; border-bottom: 1px solid var(--chip-border); }
+  .menu button { border: 0; border-radius: 0; text-align: left; padding: 7px 10px; }
+  .maplibregl-popup-content { font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
+  .maplibregl-popup-content a { color: var(--chip-fg); font-weight: bold; }
+  .maplibregl-popup-tip { display: none; }
+  .maplibregl-ctrl-attrib { background: var(--chip-bg) !important; color: var(--chip-fg) !important; }
+  .maplibregl-ctrl-attrib a { color: var(--chip-fg) !important; }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div class="jump">
+  <button type="button" data-jump="conus">CONUS</button>
+  <button type="button" data-jump="alaska">Alaska</button>
+  <button type="button" data-jump="hawaii">Hawaii</button>
+  <button type="button" data-jump="territories" title="Cycles: PR/USVI, Guam/CNMI, American Samoa">Territories</button>
+</div>
+<div class="menu" id="menu" hidden>
+  <div class="head" id="menu-head"></div>
+  <button type="button" data-act="delineate">Delineate (basin only)</button>
+  <button type="button" data-act="estimate">Estimate (basin + flows)</button>
+  <button type="button" data-act="copy">Copy lat/lon</button>
+  <button type="button" data-act="zoom">Zoom to point</button>
+</div>
 <div class="chips">
   <div class="chip" id="chip-grid" hidden></div>
   <div class="chip" id="chip-coverage" hidden>
@@ -110,6 +137,18 @@ const STREAMGRID_SERVICES = ["ak", "al", "ar", "az", "ca", "co", "crb", "ct", "d
   "mrb", "ms", "mt", "nc", "nd", "nh", "nj", "nm", "nrb", "nv", "ny", "oh", "ok", "or", "pa",
   "pr", "ri", "rrb", "sc", "sd", "tn", "tx", "ut", "va", "vt", "wa", "wi", "wv", "wy"];
 const BASIN_SERVICES = ["crb", "drb", "mo_stl", "mrb", "nrb", "rrb"];
+const GAGE_MINZOOM = 8;
+const GAGES_QUERY = `${STREAMSTATS}/StreamStats/nationalLayers/MapServer/0/query`;
+const JUMPS = {
+  conus: [CONUS],
+  alaska: [[[-170, 51], [-129, 71.5]]],
+  hawaii: [[[-161, 18.5], [-154.5, 22.5]]],
+  territories: [[[-67.5, 17.6], [-64.5, 18.6]], [[144.5, 13.2], [146.1, 20.6]], [[-171.1, -14.6], [-168.1, -11.0]]],
+};
+const EMPTY = { type: "FeatureCollection", features: [] };
+// The app's own URL (Streamlit passes it to the iframe): popup links must point at the
+// app, not at this component's index.html.
+const APP_URL = new URLSearchParams(location.search).get("streamlitUrl") || document.referrer || "/";
 const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
 
 // ---------------------------------------------------------------------------
@@ -272,14 +311,187 @@ function createMap(args) {
   });
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
   map.on("load", () => {
+    addOverlayLayers();
     ready = true;
     applyAll(pending || args, null);
     pending = null;
+    updateGages();
   });
   map.on("click", (e) => {
-    setValue({ action: "point", lat: e.lngLat.lat, lon: e.lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
+    closeMenu();
+    if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // the popup's
+    emit("point", e.lngLat);
   });
+  map.on("click", "gages", (e) => openGagePopup(e.features[0]));
+  map.on("mouseenter", "gages", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "gages", () => { map.getCanvas().style.cursor = ""; });
+  map.on("contextmenu", (e) => { e.preventDefault(); openMenu(e.point, e.lngLat); });
+  map.on("movestart", closeMenu);
   map.on("moveend", updateStreamGrid);
+  map.on("moveend", scheduleGages);
+}
+
+function emit(action, lngLat) {
+  setValue({ action, lat: lngLat.lat, lon: lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
+}
+
+// Basin, snapped pour point and gages sit above the state lines. Added after load so
+// the gage icons exist before a layer asks for them.
+function addOverlayLayers() {
+  for (const mode of Object.keys(MODES)) map.addImage(`gage-${mode}`, triangle(MODES[mode].gage));
+  map.addSource("basin", { type: "geojson", data: EMPTY });
+  map.addSource("snap", { type: "geojson", data: EMPTY });
+  map.addSource("gages", { type: "geojson", data: EMPTY,
+    attribution: "Streamgages: USGS StreamStats" });
+  map.addLayer({ id: "basin-fill", type: "fill", source: "basin", paint: { "fill-opacity": 0.18 } });
+  map.addLayer({ id: "basin-line", type: "line", source: "basin", paint: { "line-width": 2 } });
+  map.addLayer({ id: "gages", type: "symbol", source: "gages", minzoom: GAGE_MINZOOM,
+    layout: { "icon-image": "gage-dem", "icon-allow-overlap": true, "icon-ignore-placement": true } });
+  map.addLayer({ id: "snap", type: "circle", source: "snap",
+    paint: { "circle-radius": 5, "circle-stroke-width": 2, "circle-stroke-color": "#ffffff" } });
+}
+
+// A hollow equilateral triangle, the streamgage symbol, drawn once per mode colour.
+function triangle(color) {
+  const size = 16, ratio = 2, px = size * ratio;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = px;
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 2 * ratio;
+  ctx.strokeStyle = color;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(px / 2, 3 * ratio);
+  ctx.lineTo(px - 2 * ratio, px - 3 * ratio);
+  ctx.lineTo(2 * ratio, px - 3 * ratio);
+  ctx.closePath();
+  ctx.stroke();
+  const img = ctx.getImageData(0, 0, px, px);
+  return { width: px, height: px, data: img.data, pixelRatio: ratio };
+}
+
+// ---------------------------------------------------------------------------
+// Streamgages: fetched for the view from GAGE_MINZOOM in, debounced, cached per area.
+// ---------------------------------------------------------------------------
+const gageCache = new Map();
+let gageTimer = null;
+
+function scheduleGages() {
+  clearTimeout(gageTimer);
+  gageTimer = setTimeout(updateGages, 300);
+}
+
+async function updateGages() {
+  if (map.getZoom() < GAGE_MINZOOM) { map.getSource("gages").setData(EMPTY); return; }
+  const b = map.getBounds(), r = (v, f) => f(v * 2) / 2;  // snap to a 0.5-degree grid
+  const box = [r(b.getWest(), Math.floor), r(b.getSouth(), Math.floor),
+               r(b.getEast(), Math.ceil), r(b.getNorth(), Math.ceil)];
+  const key = box.join(",");
+  if (!gageCache.has(key)) {
+    const url = `${GAGES_QUERY}?where=1%3D1&geometry=${key}&geometryType=esriGeometryEnvelope` +
+                "&inSR=4326&outFields=STA_ID,STA_NAME&outSR=4326&f=geojson";
+    try {
+      const fc = await (await fetch(url)).json();
+      if (!fc.features) return;  // a service error; retried on the next moveend
+      gageCache.set(key, fc);
+    } catch (err) { return; }
+  }
+  map.getSource("gages").setData(gageCache.get(key));
+}
+
+function openGagePopup(feature) {
+  const id = String(feature.properties.STA_ID || "").trim();
+  const name = String(feature.properties.STA_NAME || "").trim();
+  const app = new URL(APP_URL, location.href);
+  app.search = `?page=gage&site=${encodeURIComponent(id)}`;
+  const root = document.createElement("div");
+  const title = document.createElement("b");
+  title.textContent = id;
+  const label = document.createElement("div");
+  label.textContent = name;  // a text node: names are data, never markup
+  const links = document.createElement("div");
+  const page = document.createElement("a");
+  page.href = app.toString();
+  page.target = "_top";
+  page.textContent = "Gage page";
+  const usgs = document.createElement("a");
+  usgs.href = `https://waterdata.usgs.gov/monitoring-location/${encodeURIComponent(id)}/`;
+  usgs.target = "_blank";
+  usgs.rel = "noopener";
+  usgs.textContent = "USGS";
+  links.append(page, " · ", usgs);
+  root.append(title, label, links);
+  new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+    .setLngLat(feature.geometry.coordinates).setDOMContent(root).addTo(map);
+}
+
+// ---------------------------------------------------------------------------
+// Context menu (right click): Delineate, Estimate, Copy lat/lon, Zoom to point.
+// ---------------------------------------------------------------------------
+let menuAt = null;
+
+function openMenu(point, lngLat) {
+  menuAt = lngLat;
+  const menu = document.getElementById("menu");
+  document.getElementById("menu-head").textContent = `${lngLat.lat.toFixed(6)}, ${lngLat.lng.toFixed(6)}`;
+  menu.hidden = false;
+  const w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+  menu.style.left = `${Math.min(point.x, w - menu.offsetWidth - 4)}px`;
+  menu.style.top = `${Math.min(point.y, h - menu.offsetHeight - 4)}px`;
+}
+
+function closeMenu() { document.getElementById("menu").hidden = true; }
+
+document.getElementById("menu").addEventListener("click", (event) => {
+  const act = event.target.dataset && event.target.dataset.act;
+  if (!act || !menuAt) return;
+  const at = menuAt;
+  if (act === "delineate" || act === "estimate") {
+    applyPoint([at.lat, at.lng], last ? last.mode : "dem");
+    emit(act, at);
+    closeMenu();
+  } else if (act === "copy") {
+    const text = `${at.lat.toFixed(6)}, ${at.lng.toFixed(6)}`;
+    const head = document.getElementById("menu-head");
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+      .then(() => { head.textContent = "copied"; }, () => { head.textContent = text + "  (select to copy)"; });
+    setTimeout(closeMenu, 700);
+  } else if (act === "zoom") {
+    closeMenu();
+    map.flyTo({ center: at, zoom: 14 });
+  }
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenu(); });
+
+// ---------------------------------------------------------------------------
+// Jump buttons. The map opens on CONUS; these are the way to everywhere else.
+// ---------------------------------------------------------------------------
+const jumpStep = {};
+document.querySelector(".jump").addEventListener("click", (event) => {
+  const name = event.target.dataset && event.target.dataset.jump;
+  if (!name || !map) return;
+  const stops = JUMPS[name], i = (jumpStep[name] || 0) % stops.length;
+  jumpStep[name] = i + 1;
+  closeMenu();
+  map.fitBounds(stops[i], { padding: 20 });
+});
+
+function bbox(geometry) {
+  let w = 180, s = 90, e = -180, n = -90;
+  const walk = (c) => {
+    if (typeof c[0] === "number") { w = Math.min(w, c[0]); e = Math.max(e, c[0]); s = Math.min(s, c[1]); n = Math.max(n, c[1]); }
+    else c.forEach(walk);
+  };
+  walk(geometry.coordinates);
+  return [[w, s], [e, n]];
+}
+
+function applyBasin(basin, snap) {
+  map.getSource("basin").setData(basin || EMPTY);
+  map.getSource("snap").setData(snap
+    ? { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [snap[1], snap[0]] } }
+    : EMPTY);
+  if (basin) map.fitBounds(bbox(basin.geometry), { padding: { top: 50, bottom: 70, left: 50, right: 50 }, maxZoom: 15 });
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +608,10 @@ function applyMode(mode) {
   }
   map.setPaintProperty("state-line", "line-color", m.stateLine.color);
   map.setPaintProperty("state-line", "line-opacity", m.stateLine.opacity);
+  map.setPaintProperty("basin-fill", "fill-color", m.basin);
+  map.setPaintProperty("basin-line", "line-color", m.basin);
+  map.setPaintProperty("snap", "circle-color", m.basin);
+  map.setLayoutProperty("gages", "icon-image", `gage-${mode}`);
   const root = document.documentElement.style;
   root.setProperty("--chip-bg", m.chip.bg);
   root.setProperty("--chip-fg", m.chip.fg);
@@ -433,6 +649,10 @@ function applyAll(args, prev) {
   if (!prev || !same(prev.point, args.point) || prev.mode !== args.mode) applyPoint(args.point, args.mode);
   if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
     applyCoverage(args.coverage, args.overlays);
+  }
+  const hash = (a) => (a && a.basin ? a.basin.properties.hash : null);
+  if (!prev || hash(prev) !== hash(args) || !same(prev.snap, args.snap)) {
+    applyBasin(args.basin, args.snap);
   }
 }
 

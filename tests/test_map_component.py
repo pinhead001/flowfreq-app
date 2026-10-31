@@ -70,6 +70,22 @@ def test_html_lists_streamgrid_services():
     assert "fl" not in names  # no StreamStats grid for Florida: the chip says so
 
 
+def test_html_declares_all_three_actions():
+    assert 'emit("point"' in HTML  # left click
+    for action in ('data-act="delineate"', 'data-act="estimate"'):  # context menu
+        assert action in HTML
+
+
+def test_html_gage_popup_links():
+    assert "?page=gage&site=" in HTML
+    assert "https://waterdata.usgs.gov/monitoring-location/" in HTML
+
+
+def test_html_has_the_four_jump_buttons():
+    for label in ("CONUS", "Alaska", "Hawaii", "Territories"):
+        assert f">{label}<" in HTML or f'"{label}"' in HTML
+
+
 def test_prepare_args_rounds_and_hashes_the_basin():
     args = _args(basin=BASIN)
     ring = args["basin"]["geometry"]["coordinates"][0][0]
