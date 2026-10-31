@@ -663,3 +663,49 @@ def test_basin_cache_is_bounded_and_in_memory():
 
 def test_shared_cache_is_the_in_memory_one():
     assert isinstance(ungaged_ui._streamstats_cache(), ungaged_ui.BasinCache)
+
+
+# --- Phase 1: map polish ---------------------------------------------------------------
+
+
+def test_mode_event_sets_the_mode_and_fills_nothing(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, {"action": "mode", "mode": "green", "nonce": 5})
+    assert not at.exception
+    assert at.session_state["map_mode"] == "green"
+    assert at.session_state["ungaged_lat"] is None
+    at.run()
+    assert stub.calls[-1]["mode"] == "green"
+    assert recorders == {"estimate": [], "delineate": []}
+
+
+def test_unknown_mode_is_ignored(monkeypatch, recorders, caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, {"action": "mode", "mode": "sepia", "nonce": 5})
+    assert not at.exception
+    assert at.session_state["map_mode"] in ("dem", "night")
+    assert any("map event" in r.getMessage() for r in caplog.records)
+
+
+def test_no_style_selector_below_the_map(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, None)
+    assert not at.get("button_group")  # the style buttons live on the map now
+
+
+def test_malformed_event_is_logged_once(monkeypatch, recorders, caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, {"action": "point", "nonce": 3})
+        at.run()
+        at.run()
+    assert sum("map event" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_basin_extras_computed_once_per_basin(monkeypatch, recorders):
+    calls = []
+    real = ungaged_ui.states_touching
+    monkeypatch.setattr(ungaged_ui, "states_touching", lambda b: calls.append(1) or real(b))
+    ungaged_ui._BASIN_EXTRAS.clear()
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    at.run()
+    at.run()
+    assert not at.exception
+    assert len(calls) == 1

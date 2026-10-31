@@ -495,3 +495,16 @@ def test_ungaged_param_opens_the_ungaged_page():
     at = _app_with({"page": "ungaged"})
     assert not at.exception
     assert any("Ungaged site" in h.value for h in at.header)
+
+
+@pytest.mark.parametrize("site", ["<script>alert(1)</script>", "[x](https://evil.example)", "12"])
+def test_gage_placeholder_rejects_a_bad_site(site):
+    at = _app_with({"page": "gage", "site": site})
+    assert not at.exception
+    assert not any(site in h.value for h in at.header)
+    assert any("not a valid" in e.value for e in at.error)
+
+
+def test_gage_placeholder_links_back_to_the_map():
+    at = _app_with({"page": "gage", "site": "12358500"})
+    assert any("?page=ungaged" in m.value for m in at.markdown)

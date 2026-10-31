@@ -125,3 +125,43 @@ def test_html_nonce_is_unique_per_page_load():
 
 def test_html_pages_past_the_gage_record_limit():
     assert "exceededTransferLimit" in HTML and "resultOffset" in HTML
+
+
+def test_prepare_args_prepares_a_basin_once(monkeypatch):
+    calls = []
+    real = map_component.round_coords
+    monkeypatch.setattr(map_component, "round_coords", lambda b: calls.append(1) or real(b))
+    map_component._PREPARED.clear()
+    first = _args(basin=BASIN)
+    second = _args(basin=BASIN)
+    assert len(calls) == 1
+    assert first["basin"] == second["basin"]
+    other = {**BASIN, "geometry": {**BASIN["geometry"]}}
+    _args(basin=other)
+    assert len(calls) == 2  # a different object is prepared afresh
+
+
+def test_html_has_style_buttons_on_the_map():
+    for mode in ("dem", "night", "green"):
+        assert f'data-mode="{mode}"' in HTML
+    assert 'action: "mode"' in HTML
+
+
+def test_html_disables_rotation():
+    assert "dragRotate: false" in HTML
+    assert "disableRotation()" in HTML
+
+
+def test_html_coarse_shade_stops_at_zoom_12():
+    layer = re.search(r'\{ id: "shade-coarse"[^}]*', HTML).group(0)
+    assert "maxzoom: 12" in layer
+
+
+def test_html_fetches_states_once():
+    assert HTML.count('fetch("./states.geojson")') == 1
+    assert 'data: "./states.geojson"' not in HTML
+
+
+def test_html_keeps_a_clicked_style_until_python_confirms_it():
+    # A rerun already in flight carries the previous style; it must not undo the click.
+    assert "pendingMode" in HTML
