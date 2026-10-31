@@ -371,6 +371,10 @@ function createMap(args) {
   map.keyboard.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
   map.on("load", () => {
+    // Start with the attribution folded to its (i) button: expanded, it covers labels
+    // along the bottom edge. One click shows it.
+    const attrib = document.querySelector(".maplibregl-ctrl-attrib");
+    if (attrib) attrib.classList.remove("maplibregl-compact-show");
     addOverlayLayers();
     ready = true;
     applyAll(pending || args, null);
@@ -615,7 +619,9 @@ function applyWaterPaint(w) {
     map.setPaintProperty(layer, "raster-saturation", r.saturation);
     map.setPaintProperty(layer, "raster-brightness-max", r.brightnessMax);
     map.setPaintProperty(layer, "raster-opacity", layer === "nhd"
-      ? ["interpolate", ["linear"], ["zoom"], 9.5, 0, 10.5, r.opacity] : r.opacity);
+      ? ["interpolate", ["linear"], ["zoom"], 9.5, 0, 10.5, r.opacity]
+      // HUC2 regions fill the CONUS view: lighter there, full strength by zoom 8.
+      : ["interpolate", ["linear"], ["zoom"], 3, r.opacity * 0.45, 8, r.opacity]);
   }
 }
 

@@ -198,3 +198,16 @@ def test_bundled_water_labels_use_real_names():
         names |= {f["properties"].get("name") for f in fc["features"]}
     assert "Gulf of Mexico" in names
     assert not any(n and n.endswith(" America") and n.startswith(("Gulf", "Lake")) for n in names)
+
+
+# --- Review polish -------------------------------------------------------------------
+
+
+def test_html_starts_with_the_attribution_collapsed():
+    # Expanded, the attribution bar covers labels along the bottom ("Gulf of Mexico").
+    assert "maplibregl-compact-show" in HTML
+
+
+def test_html_lightens_huc_lines_when_zoomed_out():
+    # HUC2 regions fill the CONUS view; they fade up to full strength by zoom 8.
+    assert "3, r.opacity * 0.45, 8, r.opacity" in HTML
