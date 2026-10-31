@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>basin map</title>
+<!--
+  The basin map: MapLibre GL JS plus the Streamlit component protocol, by hand.
+  No build step. Python side: map_component/__init__.py (args and value contract).
+-->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent;
+    font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #map { position: absolute; inset: 0; border-radius: 6px; overflow: hidden; }
+
+  /* The pour-point orb: a solid core and an expanding ring. Colour from --orb. */
+  .orb { width: 14px; height: 14px; position: relative; pointer-events: none; }
+  .orb::before, .orb::after { content: ""; position: absolute; inset: 0; border-radius: 50%; }
+  .orb::before { background: var(--orb); box-shadow: 0 0 10px 2px var(--orb); }
+  .orb::after { border: 2px solid var(--orb); animation: pulse 1.6s ease-out infinite; }
+  @keyframes pulse { from { transform: scale(1); opacity: .85; } to { transform: scale(2.6); opacity: 0; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Streamlit component protocol
+// ---------------------------------------------------------------------------
+function send(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+function setValue(value) {
+  send("streamlit:setComponentValue", { value, dataType: "json" });
+}
+
+// ---------------------------------------------------------------------------
+// Modes. Every colour the map uses lives here; a fourth mode is one more entry.
+// ---------------------------------------------------------------------------
+const MODES = {
+  dem: {
+    background: "#d9d9d9",
+    shade: { kind: "grey", levels: 14, water: [207, 211, 214, 255] },
+    rivers: { brightnessMin: 0, brightnessMax: 1, saturation: 0, hueRotate: 0, opacity: 0.9 },
+    stateLine: { color: "#555555", opacity: 1 },
+    marker: "#d97706",
+    streamgrid: { hueRotate: 0, saturation: 0.2, brightnessMin: 0 },
+    gage: "#222222",
+    basin: "#b45309",
+  },
+  night: {
+    background: "#000000",
+    shade: { kind: "tint", shadow: [0, 0, 0], highlight: [120, 140, 190], flat: 0.28, gain: 1.6,
+             alpha: 170, levels: 0 },
+    rivers: { brightnessMin: 0.35, brightnessMax: 1, saturation: 0.6, hueRotate: 0, opacity: 0.85 },
+    stateLine: { color: "#99aaaa", opacity: 0.6 },
+    marker: "#39ff14",
+    streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
+    gage: "#ffd166",
+    basin: "#39ff14",
+  },
+  green: {
+    background: "#06100c",
+    shade: { kind: "iridescent", shadow: [1, 6, 4], base: [8, 46, 30], highlight: [125, 255, 179],
+             accentA: [95, 216, 255], accentB: [182, 255, 106], flat: 0.3, gain: 1.7,
+             alpha: 255, levels: 0 },
+    rivers: { brightnessMin: 0.3, brightnessMax: 1, saturation: -0.3, hueRotate: -60, opacity: 0.8 },
+    stateLine: { color: "#55ffdd", opacity: 0.5 },
+    marker: "#39ff14",
+    streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
+    gage: "#b6ffd9",
+    basin: "#7dffb3",
+  },
+};
+
+const CONUS = [[-125, 24], [-66.5, 49.5]];
+const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
+
+// ---------------------------------------------------------------------------
+// Hillshade, computed in the browser from AWS Terrain Tiles (Terrarium PNG).
+//
+// MapLibre's own hillshade layer always smooths, and the USGS shaded-relief cache
+// 404s intermittently, so this protocol shades each elevation tile itself and hands
+// MapLibre an image. Drawn as a raster with nearest resampling and an inflated
+// tileSize, each elevation sample becomes a visible block: the early-USGS-DEM look.
+// URL: shade://{mode}/{z}/{x}/{y}
+// ---------------------------------------------------------------------------
+const TERRARIUM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+// Esri's hillshade conventions: azimuth 315 (NW light), altitude 45, with the azimuth
+// turned into a math angle (counter-clockwise from east) to compare with the aspect.
+const SUN_AZIMUTH_MATH = ((360 - 315 + 90) * Math.PI) / 180;
+const SUN_ZENITH = ((90 - 45) * Math.PI) / 180;
+const FLAT_HS = Math.cos(SUN_ZENITH);
+
+function mix(a, b, t) { return a + (b - a) * t; }
+
+function shadeTile(rgba, z, y, mode) {
+  const n = 256, out = new Uint8ClampedArray(n * n * 4), elev = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) {
+    elev[i] = rgba[i * 4] * 256 + rgba[i * 4 + 1] + rgba[i * 4 + 2] / 256 - 32768;
+  }
+  // Ground size of one pixel at this tile's latitude, metres.
+  const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / 2 ** z)));
+  const cell = (40075016.686 * Math.cos(lat)) / (n * 2 ** z);
+  // Relief is tiny against kilometre cells; exaggerate more the further out we are.
+  const zf = Math.max(1, 2 ** ((11 - z) * 0.55));
+  const s = mode.shade;
+  const at = (x, yy) => elev[Math.min(n - 1, Math.max(0, yy)) * n + Math.min(n - 1, Math.max(0, x))];
+  for (let yy = 0; yy < n; yy++) {
+    for (let x = 0; x < n; x++) {
+      const i = yy * n + x, o = i * 4, e = elev[i];
+      if (e <= 0 && s.kind === "grey") { out.set(s.water, o); continue; }
+      if (e <= 0) { out[o + 3] = 0; continue; }
+      // Horn's method.
+      const a = at(x - 1, yy - 1), b = at(x, yy - 1), c = at(x + 1, yy - 1);
+      const d = at(x - 1, yy), f = at(x + 1, yy);
+      const g = at(x - 1, yy + 1), h = at(x, yy + 1), k = at(x + 1, yy + 1);
+      // At a tile edge the clamped neighbour is the pixel itself, so the difference
+      // spans one cell, not two; dividing by the true span keeps edges seamless.
+      const spanX = x > 0 && x < n - 1 ? 8 : 4, spanY = yy > 0 && yy < n - 1 ? 8 : 4;
+      const dzdx = ((c + 2 * f + k) - (a + 2 * d + g)) / (spanX * cell) * zf;
+      const dzdy = ((g + 2 * h + k) - (a + 2 * b + c)) / (spanY * cell) * zf;
+      const slope = Math.atan(Math.hypot(dzdx, dzdy));
+      const aspect = Math.atan2(dzdy, -dzdx);
+      let hs = Math.cos(SUN_ZENITH) * Math.cos(slope) +
+               Math.sin(SUN_ZENITH) * Math.sin(slope) * Math.cos(SUN_AZIMUTH_MATH - aspect);
+      hs = Math.max(0, Math.min(1, hs));
+      if (s.levels) hs = Math.round(hs * (s.levels - 1)) / (s.levels - 1);
+      if (s.kind === "grey") {
+        const v = Math.round(40 + hs * 215);
+        out[o] = out[o + 1] = out[o + 2] = v; out[o + 3] = 255;
+      } else {
+        // Dark modes shade relative to flat ground (hs = cos 45 = 0.707), so plains
+        // stay dark and only slopes facing the light glow.
+        const rel = Math.max(0, Math.min(1, s.flat + (hs - FLAT_HS) * s.gain));
+        if (s.kind === "tint") {
+          for (let ch = 0; ch < 3; ch++) out[o + ch] = mix(s.shadow[ch], s.highlight[ch], rel);
+        } else {
+          // Iridescent: lit faces run dark green to highlight; steep lit faces pick up an
+          // accent whose hue turns with aspect, cyan on one side of a ridge, lime on the
+          // other.
+          const t = (Math.cos(aspect) + 1) / 2;
+          const steep = Math.min(1, slope / 0.5);
+          for (let ch = 0; ch < 3; ch++) {
+            const body = rel < s.flat ? mix(s.shadow[ch], s.base[ch], rel / s.flat)
+                                      : mix(s.base[ch], s.highlight[ch], (rel - s.flat) / (1 - s.flat));
+            const accent = mix(s.accentA[ch], s.accentB[ch], t);
+            out[o + ch] = mix(body, accent, steep * 0.55 * Math.max(0, rel - s.flat) / (1 - s.flat));
+          }
+        }
+        out[o + 3] = s.alpha;
+      }
+    }
+  }
+  return out;
+}
+
+maplibregl.addProtocol("shade", async (params, abort) => {
+  const [modeName, z, x, y] = params.url.replace("shade://", "").split("/");
+  const response = await fetch(`${TERRARIUM}/${z}/${x}/${y}.png`, { signal: abort.signal });
+  if (!response.ok) throw new Error(`terrain ${response.status}`);
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = new OffscreenCanvas(256, 256), ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  const pixels = ctx.getImageData(0, 0, 256, 256).data;
+  const shaded = shadeTile(pixels, +z, +y, MODES[modeName]);
+  ctx.putImageData(new ImageData(shaded, 256, 256), 0, 0);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return { data: await blob.arrayBuffer() };
+});
+
+function shadeTiles(mode) { return [`shade://${mode}/{z}/{x}/{y}`]; }
+
+// ---------------------------------------------------------------------------
+// The map
+// ---------------------------------------------------------------------------
+let map = null, last = null, marker = null, nonce = 0, ready = false, pending = null;
+let shadeMode = null;  // the mode the shade sources currently request
+
+function coverageTint(badge) {
+  if (!badge) return null;
+  if (badge.startsWith("verified")) return "verified";
+  if (badge.startsWith("partial")) return "partial";
+  if (badge.startsWith("nss")) return "snapshot";
+  return null;
+}
+
+function createMap(args) {
+  shadeMode = args.mode;
+  map = new maplibregl.Map({
+    container: "map",
+    bounds: CONUS,
+    fitBoundsOptions: { padding: 10 },
+    attributionControl: { compact: true },
+    renderWorldCopies: true,
+    style: {
+      version: 8,
+      sources: {
+        // tileSize 1024 for 256-px images: MapLibre fetches two zoom levels coarser
+        // and stretches each sample over 4x4 screen pixels.
+        "shade-coarse": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 1024, maxzoom: 13,
+          attribution: "Terrain: Mapzen/AWS Terrain Tiles" },
+        "shade-fine": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 256, maxzoom: 15 },
+        states: { type: "geojson", data: "./states.geojson", promoteId: "code",
+          attribution: "Boundaries: US Census TIGERweb" },
+      },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": MODES[args.mode].background } },
+        { id: "shade-coarse", type: "raster", source: "shade-coarse",
+          paint: { "raster-resampling": "nearest", "raster-fade-duration": 0,
+                   "raster-opacity": ["interpolate", ["linear"], ["zoom"], 10, 1, 12, 0] } },
+        { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9,
+          paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 9.5, 0, 11.5, 1] } },
+        { id: "state-fill", type: "fill", source: "states", layout: { visibility: "none" },
+          paint: { "fill-opacity": 0.25,
+                   "fill-color": ["match", ["coalesce", ["feature-state", "tint"], ""],
+                     "verified", COVERAGE_COLORS.verified, "partial", COVERAGE_COLORS.partial,
+                     "snapshot", COVERAGE_COLORS.snapshot, "rgba(0,0,0,0)"] } },
+        { id: "state-line", type: "line", source: "states",
+          paint: { "line-width": 0.6, "line-color": MODES[args.mode].stateLine.color,
+                   "line-opacity": MODES[args.mode].stateLine.opacity } },
+      ],
+    },
+  });
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.on("load", () => {
+    ready = true;
+    applyAll(pending || args, null);
+    pending = null;
+  });
+  map.on("click", (e) => {
+    setValue({ action: "point", lat: e.lngLat.lat, lon: e.lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
+  });
+}
+
+function applyMode(mode) {
+  const m = MODES[mode];
+  map.setPaintProperty("background", "background-color", m.background);
+  if (shadeMode !== mode) {
+    map.getSource("shade-coarse").setTiles(shadeTiles(mode));
+    map.getSource("shade-fine").setTiles(shadeTiles(mode));
+    shadeMode = mode;
+  }
+  map.setPaintProperty("state-line", "line-color", m.stateLine.color);
+  map.setPaintProperty("state-line", "line-opacity", m.stateLine.opacity);
+  if (marker) marker.getElement().style.setProperty("--orb", m.marker);
+}
+
+function applyPoint(point, mode) {
+  if (!point) { if (marker) { marker.remove(); marker = null; } return; }
+  const lngLat = [point[1], point[0]];
+  if (!marker) {
+    const el = document.createElement("div");
+    el.className = "orb";
+    marker = new maplibregl.Marker({ element: el }).setLngLat(lngLat).addTo(map);
+  } else {
+    marker.setLngLat(lngLat);
+  }
+  marker.getElement().style.setProperty("--orb", MODES[mode].marker);
+}
+
+function applyCoverage(coverage, overlays) {
+  for (const [code, badge] of Object.entries(coverage || {})) {
+    map.setFeatureState({ source: "states", id: code }, { tint: coverageTint(badge) });
+  }
+  map.setLayoutProperty("state-fill", "visibility", overlays.includes("coverage") ? "visible" : "none");
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// Touch only what changed since the last render: a typed digit moves one marker.
+function applyAll(args, prev) {
+  if (!prev || prev.mode !== args.mode) applyMode(args.mode);
+  if (!prev || !same(prev.point, args.point) || prev.mode !== args.mode) applyPoint(args.point, args.mode);
+  if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
+    applyCoverage(args.coverage, args.overlays);
+  }
+}
+
+function onRender(args) {
+  if (!map) {
+    createMap(args);
+    send("streamlit:setFrameHeight", { height: args.height });
+  } else if (!ready) {
+    pending = args;
+  } else {
+    applyAll(args, last);
+  }
+  last = args;
+}
+
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
+});
+send("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>
