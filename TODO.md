@@ -16,6 +16,27 @@ session-by-session detail is ever needed.
   verified at v0.15.0 on 2026-10-25 (earlier: 29 passed at v0.6.1 and v0.7.0).
 - No drift open right now. New drift goes here as it's found.
 
+## Roadmap (agreed 2026-10-31)
+
+One PR per phase, in this order. The follow-up entries below hold the detail.
+
+1. **Map polish** (bounded, in-chat design). Smaller gage symbols; style switch without a
+   Streamlit rerun; the review's deferred minors: prepare the basin payload once per
+   result, `maxzoom` on the coarse shade layer, parallel StreamGrid metadata, ordering
+   guards on gage/grid responses, one fetch of `states.geojson`, rotation off, no context
+   menu over gages, orb snaps back when Python rejects a click, one warning per malformed
+   event, gage placeholder with a way back and a validated `site`, CLAUDE.md layout, the
+   states build script checks its record limit and feature count.
+2. **Real water-body names** (spike first). Find a label-free hydro source that keeps
+   scale-dependent rivers and HUCs, then label water bodies ourselves.
+3. **Library delineate-only call** (flowfreq, next release). Polygon from `ss-delineate`
+   without `ss-hydro`; the app's Delineate adopts it after the pin bump.
+4. **New features**, each with its own spec, plan and PR: the gage page (Spec 2), then
+   cross-state comparison (option B), then the skew-region overlay (spike on HUC geometry
+   from the WBD service).
+
+Outstanding outside the phases: the live Delineate/Estimate check once StreamStats is up.
+
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 
 - **Restore the real names "Gulf of Mexico" and the lake labelled "Lake America".** The
