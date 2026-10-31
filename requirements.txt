@@ -1,4 +1,5 @@
-# >=1.40: st.segmented_control (the map style selector).
+# >=1.40: the oldest release the app is tested against; st.columns(vertical_alignment=)
+# alone needs 1.36.
 streamlit>=1.40.0
 
 # The analysis library, pinned to a tag. A change in flowfreq cannot reach this
@@ -13,3 +14,5 @@ pandas>=1.3.0
 matplotlib>=3.4.0
 scipy>=1.7.0
 requests>=2.25.0
+# The gage page's peak chart builds an Altair spec directly (Streamlit also pulls it in).
+altair>=5.0

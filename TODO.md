@@ -32,23 +32,32 @@ One PR per phase, in this order. The follow-up entries below hold the detail.
    scale-dependent rivers and HUCs, then label water bodies ourselves.
 3. **Library delineate-only call** (flowfreq PR #261 open; the app adopts it after the release that tags it). Polygon from `ss-delineate`
    without `ss-hydro`; the app's Delineate adopts it after the pin bump.
-4. **New features**: the gage page (v1 done 2026-10-31, branch `feat/gage-page`), then
-   cross-state comparison (option B), then the skew-region overlay (spike on HUC geometry
+4. **New features**: the gage page (v1 done 2026-10-31, branch `feat/gage-page`), cross-state
+   comparison (option B, done 2026-10-31, branch `feat/review-polish`), then the skew-region overlay (spike on HUC geometry
    from the WBD service).
 
 Outstanding outside the phases: the live Delineate/Estimate check once StreamStats is up.
 
+## From the second review (2026-10-31), not yet done
+
+- **Browser Back after an in-app page switch** leaves the URL and the page out of step until a
+  refresh (Streamlit does not rerun on popstate). Fix properly with `st.navigation`/`st.Page`.
+- **Sidebar page radio** recreates itself when the query params clear (its `index` flips);
+  give it a key and set it from `?page=` once. A prefilled `?page=gaged&site=` is lost on a
+  sidebar round trip.
+- **Self-host MapLibre and the glyphs** next to `index.html` (the JS now carries an SRI hash
+  and a load-failure message; the glyphs still come from MapLibre's demo server).
+- **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the
+  monitoring-location lookup). Library candidate: `USGSgage.peak_summary()`, which would also
+  move `summarize_peaks`/`record_years` out of the app (CLAUDE.md: numbers belong in flowfreq).
+- **Network errors** quote the service URL in full; fine for engineers, long on screen.
+
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 
-- **Option B, cross-state comparison.** When the delineated basin touches more than one
-  jurisdiction, run `estimate_at_site` once per state and show the results side by side
-  (tabs), so the two states' equations can be compared for the same basin. One
-  StreamStats call per state; the overlap chooser and downloads need to work per state.
-  The map ships with option A: default to the clicked state, one-click re-run for the
-  others.
-- **Skew-region overlay.** HUC fill coloured by Bulletin 17C regional-skew region from the
-  library's `regional_skew_hucs.csv`. Needs HUC geometry; only worth doing if that is
-  cheap (a small bundled file or a light service), otherwise drop.
+- **Skew-region overlay.** Spike 2026-10-31: feasible, not cheap. `regional_skew_hucs.csv` holds
+  536 member/exclude rows at HUC2, 4, 8, 10 and 12 with per-state validity; a build-time WBD
+  query per level plus simplification would give the polygons, but the rules must be drawn
+  exactly as `regional_skew_at_huc` applies them, or the map would mislead.
 - **Live re-check of Delineate/Estimate on the map.** StreamStats' `ss-hydro` returned 502
   everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
   seen end to end (the component draws an injected polygon correctly; the page shows the
