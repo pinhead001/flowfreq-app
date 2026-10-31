@@ -17,8 +17,11 @@ The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
   banded grey shading, the early-USGS-DEM look), **Night** (city lights under blue-grey
   relief; the default under a dark theme) and **Green** (iridescent hillshade). The
   hillshade is computed in the browser from AWS Terrain Tiles.
-- Rivers and hydrologic units from USGS The National Map, more detail with zoom; state and
-  territory lines; an optional tint by equation coverage (verified / partial / snapshot).
+- Rivers, lakes and hydrologic units, more detail with zoom: Natural Earth rivers and lakes
+  (bundled, styled per mode) below zoom 10, USGS NHD streams from zoom 10, USGS WBD HUC2-HUC12
+  throughout, all without baked-in labels. Water bodies are labelled by the map itself with
+  their real names ("Gulf of Mexico"); `tools/build_hydro_geojson.py` holds the correction
+  list. State and territory lines; an optional tint by equation coverage (verified / partial / snapshot).
 - **StreamStats StreamGrid** from zoom 13: the cells that will snap and delineate, with a
   chip naming states that have no grid.
 - **Streamgages** from zoom 8 as hollow triangles; a popup links the gage page (a

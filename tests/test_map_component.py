@@ -165,3 +165,36 @@ def test_html_fetches_states_once():
 def test_html_keeps_a_clicked_style_until_python_confirms_it():
     # A rerun already in flight carries the previous style; it must not undo the click.
     assert "pendingMode" in HTML
+
+
+# --- Phase 2: real water-body names -------------------------------------------------
+
+
+def test_html_drops_the_labelled_usgs_hydro_tiles():
+    # Their labels are baked in ("Gulf of America") and cannot be renamed.
+    assert "USGSHydroCached" not in HTML
+
+
+def test_html_exports_nhd_and_wbd_without_labels():
+    assert '"https://hydro.nationalmap.gov/arcgis/rest/services"' in HTML
+    assert "/MapServer/export?" in HTML
+    assert 'exportTiles("nhd",' in HTML and 'exportTiles("wbd",' in HTML
+    assert "showLabels: false" in HTML
+
+
+def test_html_labels_water_from_bundled_files():
+    for name in ("water_base.geojson", "water_detail.geojson", "water_labels.geojson"):
+        assert name in HTML
+        assert (ROOT / name).is_file()
+    assert re.search(r'glyphs: "https://[^"]+\{fontstack\}/\{range\}\.pbf"', HTML)
+
+
+def test_bundled_water_labels_use_real_names():
+    import json as _json
+
+    names = set()
+    for name in ("water_base.geojson", "water_detail.geojson", "water_labels.geojson"):
+        fc = _json.loads((ROOT / name).read_text(encoding="utf-8"))
+        names |= {f["properties"].get("name") for f in fc["features"]}
+    assert "Gulf of Mexico" in names
+    assert not any(n and n.endswith(" America") and n.startswith(("Gulf", "Lake")) for n in names)
