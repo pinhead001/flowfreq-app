@@ -7,6 +7,7 @@ Run with: streamlit run streamlit_app.py
 import io
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -384,13 +385,19 @@ def requested_page(params: Mapping[str, str]) -> Optional[str]:
 
 requested = requested_page(st.query_params)
 if requested == PAGE_GAGE:
-    # Placeholder until the gage page exists (TODO.md, Spec 2).
+    # Placeholder until the gage page exists (TODO.md, Spec 2). The site number comes from
+    # the URL, so it is checked before it reaches any markdown.
     site = st.query_params.get("site", "")
-    st.header(f"Gage {site}")
-    st.info(
-        "The gage page is coming: period of record for daily and peak flows, Bulletin 17C, "
-        f"hydrographs. Meanwhile, see https://waterdata.usgs.gov/monitoring-location/{site}/"
-    )
+    st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
+    if not re.fullmatch(r"\d{8,15}", site):
+        st.error("That is not a valid USGS site number (8 to 15 digits).")
+    else:
+        st.header(f"Gage {site}")
+        st.info(
+            "The gage page is coming: period of record for daily and peak flows, "
+            "Bulletin 17C, hydrographs. Meanwhile, see "
+            f"https://waterdata.usgs.gov/monitoring-location/{site}/"
+        )
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 

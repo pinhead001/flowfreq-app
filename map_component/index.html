@@ -30,9 +30,14 @@
     vertical-align: -1px; border-radius: 2px; }
   .swatch:first-child { margin-left: 0; }
   .jump { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; z-index: 2; }
-  .jump button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  .modes { position: absolute; right: 10px; top: 10px; display: flex; z-index: 2; }
+  .modes button { border-radius: 0; margin-left: -1px; }
+  .modes button:first-child { border-radius: 4px 0 0 4px; }
+  .modes button:last-child { border-radius: 0 4px 4px 0; }
+  .modes button.active { background: var(--chip-fg); color: var(--chip-bg); }
+  .jump button, .modes button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
     background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
-  .jump button:hover, .menu button:hover { filter: brightness(1.25); }
+  .jump button:hover, .modes button:hover, .menu button:hover { filter: brightness(1.25); }
   .menu { position: absolute; z-index: 3; display: flex; flex-direction: column; min-width: 170px;
     background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 6px;
     box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; }
@@ -54,6 +59,11 @@
   <button type="button" data-jump="alaska">Alaska</button>
   <button type="button" data-jump="hawaii">Hawaii</button>
   <button type="button" data-jump="territories" title="Cycles: PR/USVI, Guam/CNMI, American Samoa">Territories</button>
+</div>
+<div class="modes" title="Map style">
+  <button type="button" data-mode="dem">DEM</button>
+  <button type="button" data-mode="night">Night</button>
+  <button type="button" data-mode="green">Green</button>
 </div>
 <div class="menu" id="menu" hidden>
   <div class="head" id="menu-head"></div>
@@ -252,7 +262,12 @@ function shadeTiles(mode) { return [`shade://${mode}/{z}/{x}/{y}`]; }
 // ---------------------------------------------------------------------------
 // The nonce starts at the load time, so a remounted iframe never repeats one Python has seen.
 let map = null, last = null, marker = null, nonce = Date.now(), ready = false, pending = null;
-let shadeMode = null;  // the mode the shade sources currently request
+let shadeMode = null;    // the mode the shade sources currently request
+let appliedMode = null;  // the mode the map shows; a style button sets it before Python
+let pendingMode = null;  // a clicked style Python has not echoed back yet
+let gageSeq = 0, gridSeq = 0;  // drop responses that a later request has overtaken
+// One fetch of the boundaries, shared by the map source and the StreamGrid state index.
+const statesData = fetch("./states.geojson").then((r) => r.json());
 
 function coverageTint(badge) {
   if (!badge) return null;
@@ -270,6 +285,10 @@ function createMap(args) {
     fitBoundsOptions: { padding: 10 },
     attributionControl: { compact: true },
     renderWorldCopies: true,
+    // No rotation: there is no compass to put north back.
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
     style: {
       version: 8,
       sources: {
@@ -287,17 +306,17 @@ function createMap(args) {
         hydro: { type: "raster", tileSize: 256, maxzoom: 16,
           tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSHydroCached/MapServer/tile/{z}/{y}/{x}"],
           attribution: "Hydrography: USGS The National Map" },
-        states: { type: "geojson", data: "./states.geojson", promoteId: "code",
+        states: { type: "geojson", data: EMPTY, promoteId: "code",
           attribution: "Boundaries: US Census TIGERweb" },
       },
       layers: [
         { id: "background", type: "background", paint: { "background-color": MODES[args.mode].background } },
         { id: "lights", type: "raster", source: "lights", layout: { visibility: "none" },
           paint: { "raster-opacity": 0.9 } },
-        { id: "shade-coarse", type: "raster", source: "shade-coarse",
+        { id: "shade-coarse", type: "raster", source: "shade-coarse", maxzoom: 12,
           paint: { "raster-resampling": "nearest", "raster-fade-duration": 0,
                    "raster-opacity": ["interpolate", ["linear"], ["zoom"], 10, 1, 12, 0] } },
-        { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9,
+        { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9.5,
           paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 9.5, 0, 11.5, 1] } },
         { id: "hydro", type: "raster", source: "hydro" },
         { id: "state-fill", type: "fill", source: "states", layout: { visibility: "none" },
@@ -311,12 +330,18 @@ function createMap(args) {
       ],
     },
   });
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
   map.on("load", () => {
     addOverlayLayers();
     ready = true;
     applyAll(pending || args, null);
     pending = null;
+    statesData.then((fc) => {
+      map.getSource("states").setData(fc);
+      if (last) applyCoverage(last.coverage, last.overlays);
+    });
     updateGages();
   });
   map.on("click", (e) => {
@@ -324,13 +349,17 @@ function createMap(args) {
     if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // the popup's
     // Move the orb now; Python's echo of the point arrives a rerun later.
     const at = e.lngLat.wrap();  // a click on a repeated world copy, back inside +-180
-    applyPoint([at.lat, at.lng], last ? last.mode : "dem");
+    applyPoint([at.lat, at.lng], appliedMode);
     emit("point", at);
   });
   map.on("click", "gages", (e) => openGagePopup(e.features[0]));
   map.on("mouseenter", "gages", () => { map.getCanvas().style.cursor = "pointer"; });
   map.on("mouseleave", "gages", () => { map.getCanvas().style.cursor = ""; });
-  map.on("contextmenu", (e) => { e.preventDefault(); openMenu(e.point, e.lngLat.wrap()); });
+  map.on("contextmenu", (e) => {
+    e.preventDefault();
+    if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // a gage
+    openMenu(e.point, e.lngLat.wrap());
+  });
   map.on("movestart", closeMenu);
   map.on("moveend", updateStreamGrid);
   map.on("moveend", scheduleGages);
@@ -351,7 +380,9 @@ function addOverlayLayers() {
   map.addLayer({ id: "basin-fill", type: "fill", source: "basin", paint: { "fill-opacity": 0.18 } });
   map.addLayer({ id: "basin-line", type: "line", source: "basin", paint: { "line-width": 2 } });
   map.addLayer({ id: "gages", type: "symbol", source: "gages", minzoom: GAGE_MINZOOM,
-    layout: { "icon-image": "gage-dem", "icon-allow-overlap": true, "icon-ignore-placement": true } });
+    layout: { "icon-image": "gage-dem", "icon-allow-overlap": true, "icon-ignore-placement": true,
+              // ~10 px at zoom 8, the full 16 px by zoom 12: dense areas stay legible.
+              "icon-size": ["interpolate", ["linear"], ["zoom"], 8, 0.62, 12, 1] } });
   map.addLayer({ id: "snap", type: "circle", source: "snap",
     paint: { "circle-radius": 5, "circle-stroke-width": 2, "circle-stroke-color": "#ffffff" } });
 }
@@ -382,11 +413,13 @@ const gageCache = new Map();
 let gageTimer = null;
 
 function scheduleGages() {
+  if (!ready) return;
   clearTimeout(gageTimer);
   gageTimer = setTimeout(updateGages, 300);
 }
 
 async function updateGages() {
+  const mine = ++gageSeq;
   if (map.getZoom() < GAGE_MINZOOM) { map.getSource("gages").setData(EMPTY); return; }
   const b = map.getBounds(), r = (v, f) => f(v * 2) / 2;  // snap to a 0.5-degree grid
   const box = [r(b.getWest(), Math.floor), r(b.getSouth(), Math.floor),
@@ -410,6 +443,7 @@ async function updateGages() {
     } catch (err) { return; }
     gageCache.set(key, { type: "FeatureCollection", features });
   }
+  if (mine !== gageSeq) return;  // the view moved on while this was loading
   map.getSource("gages").setData(gageCache.get(key));
 }
 
@@ -461,7 +495,7 @@ document.getElementById("menu").addEventListener("click", (event) => {
   if (!act || !menuAt) return;
   const at = menuAt;
   if (act === "delineate" || act === "estimate") {
-    applyPoint([at.lat, at.lng], last ? last.mode : "dem");
+    applyPoint([at.lat, at.lng], appliedMode);
     emit(act, at);
     closeMenu();
   } else if (act === "copy") {
@@ -488,6 +522,17 @@ document.querySelector(".jump").addEventListener("click", (event) => {
   jumpStep[name] = i + 1;
   closeMenu();
   map.fitBounds(stops[i], { padding: 20 });
+});
+
+// ---------------------------------------------------------------------------
+// Style buttons: restyle now, then tell Python so the choice survives reruns.
+// ---------------------------------------------------------------------------
+document.querySelector(".modes").addEventListener("click", (event) => {
+  const mode = event.target.dataset && event.target.dataset.mode;
+  if (!mode || !ready || mode === appliedMode) return;
+  applyMode(mode);
+  pendingMode = mode;
+  setValue({ action: "mode", mode, nonce: ++nonce });
 });
 
 function bbox(geometry) {
@@ -520,7 +565,7 @@ const gridAdded = new Set();
 
 async function loadStateIndex() {
   if (stateIndex) return stateIndex;
-  const fc = await (await fetch("./states.geojson")).json();
+  const fc = await statesData;
   stateIndex = fc.features.map((f) => {
     const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
     return { code: f.properties.code, boxes: polys.map((p) => {
@@ -571,7 +616,7 @@ function addGrid(service, ids) {
     attribution: "StreamGrid: USGS StreamStats" });
   map.addLayer({ id: `sg-${service}`, type: "raster", source: `sg-${service}`, minzoom: STREAMGRID_MINZOOM,
     paint: Object.assign({ "raster-resampling": "nearest", "raster-opacity": 0.9 },
-                         gridPaint(MODES[last ? last.mode : "dem"])) }, "state-fill");
+                         gridPaint(MODES[appliedMode || "dem"])) }, "state-fill");
 }
 
 function gridPaint(m) {
@@ -581,26 +626,33 @@ function gridPaint(m) {
 }
 
 async function updateStreamGrid() {
+  if (!ready) return;
+  const mine = ++gridSeq;
   const chip = document.getElementById("chip-grid");
   if (map.getZoom() < STREAMGRID_MINZOOM) { chip.hidden = true; return; }
   const b = map.getBounds(), view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
   const index = await loadStateIndex();
   const inView = index.filter((s) => s.boxes.some((box) => overlaps(box, view))).map((s) => s.code);
+  // Every service's metadata at once; each answer is cached, so later moves are instant.
+  const [stateIds, basinIds] = await Promise.all([
+    Promise.all(inView.map((code) => {
+      const service = code.toLowerCase();
+      return STREAMGRID_SERVICES.includes(service) ? gridLayers(service) : null;
+    })),
+    Promise.all(BASIN_SERVICES.map(async (service) => {
+      const box = await basinExtent(service);
+      return box && overlaps(box, view) ? gridLayers(service) : null;
+    })),
+  ]);
+  if (mine !== gridSeq) return;  // the view moved on while this was loading
   const served = [], unserved = [], failed = [];
-  for (const code of inView) {
-    const service = code.toLowerCase();
-    const ids = STREAMGRID_SERVICES.includes(service) ? await gridLayers(service) : null;
-    if (ids) { served.push(code); addGrid(service, ids); }
+  inView.forEach((code, i) => {
+    const ids = stateIds[i];
+    if (ids) { served.push(code); addGrid(code.toLowerCase(), ids); }
     else if (ids === undefined) failed.push(code);
     else unserved.push(code);
-  }
-  for (const service of BASIN_SERVICES) {
-    const box = await basinExtent(service);
-    if (box && overlaps(box, view)) {
-      const ids = await gridLayers(service);
-      if (ids) addGrid(service, ids);
-    }
-  }
+  });
+  BASIN_SERVICES.forEach((service, i) => { if (basinIds[i]) addGrid(service, basinIds[i]); });
   chip.hidden = inView.length === 0;
   const notes = [];
   if (unserved.length) notes.push(`none for ${unserved.join(", ")}`);
@@ -614,6 +666,9 @@ async function updateStreamGrid() {
 
 function applyMode(mode) {
   const m = MODES[mode];
+  appliedMode = mode;
+  document.querySelectorAll(".modes button")
+    .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   map.setPaintProperty("background", "background-color", m.background);
   if (shadeMode !== mode) {
     map.getSource("shade-coarse").setTiles(shadeTiles(mode));
@@ -666,10 +721,20 @@ function applyCoverage(coverage, overlays) {
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+function markerAt(point) {
+  if (!point || !marker) return !point && !marker;
+  const at = marker.getLngLat();
+  return Math.abs(at.lat - point[0]) < 1e-6 && Math.abs(at.lng - point[1]) < 1e-6;
+}
+
 // Touch only what changed since the last render: a typed digit moves one marker.
 function applyAll(args, prev) {
-  if (!prev || prev.mode !== args.mode) applyMode(args.mode);
-  if (!prev || !same(prev.point, args.point) || prev.mode !== args.mode) applyPoint(args.point, args.mode);
+  // A rerun that was already running when a style button was clicked still carries the
+  // old style: keep the click until a render confirms it.
+  if (pendingMode && args.mode === pendingMode) pendingMode = null;
+  if (!pendingMode && args.mode !== appliedMode) applyMode(args.mode);
+  // Python's point wins: this also snaps the orb back when Python ignored a click.
+  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) applyPoint(args.point, appliedMode);
   if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
     applyCoverage(args.coverage, args.overlays);
   }

@@ -39,7 +39,7 @@ from map_geo import state_at, states_touching
 
 logger = logging.getLogger(__name__)
 
-MODE_LABELS = {"dem": "DEM", "night": "Night", "green": "Green"}
+#: Map events that carry a point; ``mode`` (the on-map style buttons) carries a style.
 MAP_ACTIONS = ("point", "delineate", "estimate")
 
 BADGE_VERIFIED = "verified"
@@ -257,9 +257,11 @@ def _coverage() -> Dict[str, str]:
 def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
     """Apply a new map event to the input widgets' session state.
 
-    Must run before the input widgets are created. Writes ``ungaged_lat`` and
-    ``ungaged_lon``, and ``ungaged_state`` when the point lies in one of ``codes``; a
-    point in the ocean or outside them leaves the jurisdiction as it was.
+    Must run before the input widgets are created. A point event writes ``ungaged_lat``
+    and ``ungaged_lon``, and ``ungaged_state`` when the point lies in one of ``codes``; a
+    point in the ocean or outside them leaves the jurisdiction as it was. A ``mode``
+    event writes ``map_mode`` (the map has already restyled itself). A malformed event
+    is logged once, not on every rerun while the component keeps returning it.
 
     Parameters
     ----------
@@ -271,27 +273,36 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
     Returns
     -------
     str or None
-        The action applied, or ``None`` when there was no new, well-formed event.
+        The action applied (``point``, ``delineate``, ``estimate`` or ``mode``), or
+        ``None`` when there was no new, well-formed event.
     """
     if event is None:
         # A map that has not sent anything: a fresh iframe (after a page switch, say),
         # whose counter restarts, so forget the last nonce rather than collide with it.
         st.session_state.pop("map_event_nonce", None)
         return None
-    ok = (
-        isinstance(event, dict)
-        and event.get("action") in MAP_ACTIONS
-        and all(
-            isinstance(event.get(k), numbers.Real) and not isinstance(event.get(k), bool)
-            for k in ("lat", "lon", "nonce")
-        )
-    )
+
+    def number(key: str) -> bool:
+        value = event.get(key)
+        return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+    action = event.get("action") if isinstance(event, dict) else None
+    if action == "mode":
+        ok = event.get("mode") in MODES and number("nonce")
+    else:
+        ok = action in MAP_ACTIONS and all(number(k) for k in ("lat", "lon", "nonce"))
     if not ok:
-        logger.warning("ignored malformed map event: %r", event)
+        seen = repr(event)
+        if st.session_state.get("map_bad_event") != seen:
+            st.session_state["map_bad_event"] = seen
+            logger.warning("ignored malformed map event: %r", event)
         return None
     if event["nonce"] == st.session_state.get("map_event_nonce"):
         return None  # the component keeps returning its last value; already applied
     st.session_state["map_event_nonce"] = event["nonce"]
+    if action == "mode":
+        st.session_state["map_mode"] = event["mode"]
+        return action
     # A click on a repeated world copy arrives outside +-180; bring it back.
     lon = (float(event["lon"]) + 180.0) % 360.0 - 180.0
     lat, lon = round(float(event["lat"]), 6), round(lon, 6)
@@ -409,10 +420,27 @@ def basin_download_name(state: str, lat: float, lon: float) -> str:
     return f"ungaged_{state}_{lat:.4f}_{lon:.4f}.geojson"
 
 
+#: Per-basin values the page shows on every rerun, by the identity of the stored Feature
+#: (which survives reruns): the GeoJSON download text and the jurisdictions it touches.
+_BASIN_EXTRAS: Dict[int, Tuple[Dict[str, Any], str, List[str]]] = {}
+_BASIN_EXTRAS_MAX = 16
+
+
+def _basin_extras(basin: Dict[str, Any]) -> Tuple[str, List[str]]:
+    hit = _BASIN_EXTRAS.get(id(basin))
+    if hit is not None and hit[0] is basin:
+        return hit[1], hit[2]
+    text, touching = json.dumps(basin), states_touching(basin)
+    if len(_BASIN_EXTRAS) >= _BASIN_EXTRAS_MAX:
+        _BASIN_EXTRAS.pop(next(iter(_BASIN_EXTRAS)))
+    _BASIN_EXTRAS[id(basin)] = (basin, text, touching)
+    return text, touching
+
+
 def _basin_download(basin: Dict[str, Any], state: str, lat: float, lon: float) -> None:
     st.download_button(
         "Download basin (GeoJSON)",
-        data=json.dumps(basin),
+        data=_basin_extras(basin)[0],
         file_name=basin_download_name(state, lat, lon),
         mime="application/geo+json",
     )
@@ -426,7 +454,7 @@ def _rerun_in(code: str) -> None:
 
 def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
     codes = {j.code for j in JURISDICTIONS}
-    others = [c for c in states_touching(basin) if c != used and c in codes]
+    others = [c for c in _basin_extras(basin)[1] if c != used and c in codes]
     if not others:
         return
     st.info(
@@ -484,18 +512,15 @@ def render() -> None:
         coverage=_coverage(),
     )
     action = handle_map_event(event, codes)
-    col_mode, col_cov = st.columns([3, 2])
-    col_mode.segmented_control(
-        "Map", MODES, format_func=MODE_LABELS.get, key="map_mode", label_visibility="collapsed"
-    )
-    col_cov.toggle(
+    st.toggle(
         "Equation coverage",
         key="map_coverage",
         help="Tint jurisdictions by their regression library: verified, partial, NSS snapshot.",
     )
     st.caption(
         "Click a stream to fill the coordinates, then Estimate. Right-click for Delineate, "
-        "Estimate, Copy and Zoom. From zoom 13 the StreamStats grid shows which cells snap."
+        "Estimate, Copy and Zoom. From zoom 13 the StreamStats grid shows which cells snap. "
+        "Map style: DEM, Night, Green, top right of the map."
     )
 
     col_lat, col_lon, col_state = st.columns(3)

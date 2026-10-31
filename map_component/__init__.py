@@ -8,9 +8,12 @@ The component's value is the latest event that needs Python, or ``None``::
 
     {"action": "point" | "delineate" | "estimate", "lat": float, "lon": float,
      "zoom": float, "nonce": int}
+    {"action": "mode", "mode": "dem" | "night" | "green", "nonce": int}
 
-``point`` is a left click, the other two are context-menu items; ``nonce`` increments per
-event so two events at the same spot differ. Copy and zoom-to-point never reach Python.
+``point`` is a left click, ``delineate`` and ``estimate`` are context-menu items, ``mode``
+is the on-map style buttons (already applied by the map; Python only remembers it).
+``nonce`` increments per event so two events at the same spot differ. Copy and
+zoom-to-point never reach Python.
 """
 
 from __future__ import annotations
@@ -26,6 +29,24 @@ from map_geo import geojson_hash, round_coords
 MODES: Tuple[str, ...] = ("dem", "night", "green")
 
 _component = components.declare_component("basin_map", path=str(Path(__file__).parent))
+
+#: Prepared (rounded, fingerprinted) basins by the identity of the caller's Feature. A
+#: stored result keeps the same object across reruns, so it is prepared once, not on every
+#: widget touch. Each entry keeps its source so a recycled ``id`` cannot match.
+_PREPARED: Dict[int, Tuple[Dict[str, Any], Dict[str, Any]]] = {}
+_PREPARED_MAX = 16
+
+
+def _prepared(basin: Dict[str, Any]) -> Dict[str, Any]:
+    hit = _PREPARED.get(id(basin))
+    if hit is not None and hit[0] is basin:
+        return hit[1]
+    sent = round_coords(basin)
+    sent["properties"]["hash"] = geojson_hash(sent)
+    if len(_PREPARED) >= _PREPARED_MAX:
+        _PREPARED.pop(next(iter(_PREPARED)))
+    _PREPARED[id(basin)] = (basin, sent)
+    return sent
 
 
 def _pair(value: Optional[Tuple[float, float]]) -> Optional[list]:
@@ -50,7 +71,8 @@ def prepare_args(
         Where to draw the pulsing marker: the typed or clicked coordinate.
     basin : dict, optional
         GeoJSON Feature of the delineated basin. Sent rounded to 6 dp with a
-        ``properties["hash"]`` fingerprint so the map skips re-adding an unchanged basin.
+        ``properties["hash"]`` fingerprint so the map skips re-adding an unchanged basin;
+        the same object is prepared only once.
     snap : (lat, lon), optional
         StreamStats' snapped pour point.
     mode : str
@@ -74,13 +96,9 @@ def prepare_args(
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
-    sent_basin = None
-    if basin is not None:
-        sent_basin = round_coords(basin)
-        sent_basin["properties"]["hash"] = geojson_hash(sent_basin)
     return {
         "point": _pair(point),
-        "basin": sent_basin,
+        "basin": None if basin is None else _prepared(basin),
         "snap": _pair(snap),
         "mode": mode,
         "overlays": sorted(overlays),
