@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### flowfreq v0.18.0
+
+The pin moves from v0.17.0 to v0.18.0. Existing calls are unchanged. What it adds for the app:
+- `SiteEstimate.basin_geojson`, the delineated watershed polygon, which the basin map needs.
+- Ungaged estimates in Wyoming region 1 (outlet longitude taken from the pour point) and in
+  Minnesota's Rainy River Basin (GC1775).
+- Regional skew by hydrologic unit in NY, PA, VA, WV, MA, LA, KY, TN and Alaska. In Alaska,
+  `regional_skew_for_site` now refuses a gage outside its skew area's drainage-area range
+  ("use station skew").
+
 ### flowfreq v0.17.0
 
 The pin moves from v0.16.0 to v0.17.0. The library's API is unchanged for the app. What
