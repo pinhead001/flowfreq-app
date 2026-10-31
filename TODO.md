@@ -27,6 +27,17 @@ session-by-session detail is ever needed.
 - **Skew-region overlay.** HUC fill coloured by Bulletin 17C regional-skew region from the
   library's `regional_skew_hucs.csv`. Needs HUC geometry; only worth doing if that is
   cheap (a small bundled file or a light service), otherwise drop.
+- **Live re-check of Delineate/Estimate on the map.** StreamStats' `ss-hydro` returned 502
+  everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
+  seen end to end (the component draws an injected polygon correctly; the page shows the
+  outage as an error). Re-run the two unchecked items in `docs/map_manual_checks.md`.
+- **Library: a delineate-only call that skips `ss-hydro`.** The map's *Delineate* uses
+  `delineate_and_get_characteristics`, which always calls `ss-hydro` for characteristics
+  although the polygon comes from `ss-delineate`. A polygon-only path in flowfreq would make
+  Delineate faster and immune to `ss-hydro` outages like the one above. Library work.
+- **Style switch without a rerun.** Switching DEM/Night/Green costs one Streamlit round
+  trip (0.12-0.16 s measured). Map-side buttons that restyle locally and report the choice
+  back would make it instant.
 - **Spec 2, the gage page.** `?page=gage&site=NNNNNNNN`, linked from the map's gage
   popups: site header, period of record for daily and peak flows via
   `flowfreq.waterdata`, "Run Bulletin 17C on this site", then summary hydrograph, raster
