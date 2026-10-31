@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### flowfreq v0.17.0
+
+The pin moves from v0.16.0 to v0.17.0. The library's API is unchanged for the app. What
+reaches the Ungaged-site page:
+- GA, NC and SC equations parse (SIR 2023-5006).
+- 32 LA, AR and MS equations now give prediction intervals.
+- The region selector accepts a boundary basin's codes (`region=` with several codes).
+- `region=` works in Wyoming and Nevada, where NSS locates no peak-flow region.
+
 ### Ungaged-site page, flowfreq v0.16.0
 
 The pin moves from v0.15.0 to v0.16.0, which adds `flowfreq.estimate_at_site`.
