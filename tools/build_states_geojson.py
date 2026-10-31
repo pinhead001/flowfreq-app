@@ -32,6 +32,8 @@ SERVICE = (
 LAYER_20M = 9
 LAYER_5M = 8
 SMALL_TERRITORIES = ("AS", "GU", "MP", "VI")
+#: 50 states, DC, PR and the four small territories.
+EXPECTED_FEATURES = 56
 OUT = Path(__file__).resolve().parent.parent / "map_component" / "states.geojson"
 
 
@@ -42,7 +44,24 @@ def _query(layer: int, where: str) -> List[Dict[str, Any]]:
         timeout=120,
     )
     response.raise_for_status()
-    return response.json()["features"]
+    return features_of(response.json())
+
+
+def features_of(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The features of a query response, refusing one the server cut short."""
+    limited = payload.get("exceededTransferLimit") or (payload.get("properties") or {}).get(
+        "exceededTransferLimit"
+    )
+    if limited:
+        raise ValueError("TIGERweb truncated the response (exceededTransferLimit); page it")
+    return payload["features"]
+
+
+def check_count(collection: Dict[str, Any]) -> None:
+    """Refuse a collection without exactly :data:`EXPECTED_FEATURES` features."""
+    count = len(collection["features"])
+    if count != EXPECTED_FEATURES:
+        raise ValueError(f"expected {EXPECTED_FEATURES} features, got {count}")
 
 
 def _round(coords: Any) -> Any:
@@ -73,6 +92,7 @@ def build() -> Dict[str, Any]:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     collection = build()
+    check_count(collection)
     text = json.dumps(collection, separators=(",", ":"))
     OUT.write_text(text, encoding="utf-8")
     logger.info("%d features, %d KB -> %s", len(collection["features"]), len(text) // 1024, OUT)
