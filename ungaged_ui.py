@@ -16,6 +16,7 @@ without a Streamlit runtime; :func:`render` is the page.
 
 from __future__ import annotations
 
+import json
 import logging
 import numbers
 from functools import lru_cache
@@ -32,7 +33,7 @@ from flowfreq.streamstats import delineate_and_get_characteristics
 from flowfreq.ungaged import SiteEstimate
 
 from map_component import MODES, basin_map
-from map_geo import state_at
+from map_geo import state_at, states_touching
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ BADGE_NONE = "none: NSS serves no peak-flow regions"
 AEP_CHOICES = (0.5, 0.2, 0.1, 0.04, 0.02, 0.01, 0.005, 0.002)
 
 RESULT_KEY = "ungaged_result"
+#: An estimate a callback asked for (the "Re-run with" buttons); run once inputs are read.
+PENDING_KEY = "ungaged_pending"
 
 
 def coverage_badge(code: str) -> str:
@@ -251,7 +254,17 @@ def _basin_payload(
     result: Optional[Dict[str, Any]],
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[float, float]]]:
     """The basin polygon and snapped pour point a stored result carries, if any."""
-    return None, None
+    outcome = (result or {}).get("outcome") or {}
+    if "basin" in outcome:
+        return outcome["basin"], outcome.get("snap")
+    estimate = outcome.get("estimate")
+    basin = getattr(estimate, "basin_geojson", None)
+    if basin is None:
+        return None, None
+    snapped = (estimate.provenance or {}).get("snap") or {}
+    if "snapped_lat" in snapped and "snapped_lon" in snapped:
+        return basin, (snapped["snapped_lat"], snapped["snapped_lon"])
+    return basin, None
 
 
 def _state_label(code: str) -> str:
@@ -332,6 +345,43 @@ def _show_estimate(estimate: SiteEstimate) -> None:
         file_name=f"ungaged_{estimate.state}_{estimate.lat:.4f}_{estimate.lon:.4f}.md",
         mime="text/markdown",
     )
+    basin = getattr(estimate, "basin_geojson", None)
+    if basin is not None:
+        _basin_download(basin, estimate.state, estimate.lat, estimate.lon)
+        _offer_other_states(basin, estimate.state)
+
+
+def basin_download_name(state: str, lat: float, lon: float) -> str:
+    """File name for a basin's GeoJSON download."""
+    return f"ungaged_{state}_{lat:.4f}_{lon:.4f}.geojson"
+
+
+def _basin_download(basin: Dict[str, Any], state: str, lat: float, lon: float) -> None:
+    st.download_button(
+        "Download basin (GeoJSON)",
+        data=json.dumps(basin),
+        file_name=basin_download_name(state, lat, lon),
+        mime="application/geo+json",
+    )
+
+
+def _rerun_in(code: str) -> None:
+    # A callback runs before the script, so it may set the jurisdiction widget's key.
+    st.session_state["ungaged_state"] = code
+    st.session_state[PENDING_KEY] = "estimate"
+
+
+def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
+    codes = {j.code for j in JURISDICTIONS}
+    others = [c for c in states_touching(basin) if c != used and c in codes]
+    if not others:
+        return
+    st.info(
+        f"This basin also lies in {', '.join(others)}. Each state's equations are its own "
+        "report; re-run to see another's."
+    )
+    for col, code in zip(st.columns(len(others)), others):
+        col.button(f"Re-run with {code}", on_click=_rerun_in, args=(code,), key=f"rerun_{code}")
 
 
 def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
@@ -437,6 +487,8 @@ def render() -> None:
         del st.session_state[RESULT_KEY]
         st.session_state.pop("ungaged_candidate", None)
 
+    if st.session_state.pop(PENDING_KEY, None) == "estimate":
+        action = "estimate"
     if action == "delineate":
         _store_basin(current)
         st.rerun()  # so the map receives the basin
@@ -451,6 +503,7 @@ def render() -> None:
             }
         else:
             _store(current)
+            st.rerun()  # so the map, drawn above, receives the basin
 
     result = st.session_state.get(RESULT_KEY)
     if not result:
@@ -464,6 +517,8 @@ def render() -> None:
         area = outcome.get("area_sq_mi")
         size = f"{area:,.1f} sq mi" if area is not None else "area unknown"
         st.caption(f"Basin delineated: {size}. Press Estimate for quantiles.")
+        if inputs is not None:
+            _basin_download(outcome["basin"], inputs["state"], inputs["lat"], inputs["lon"])
     elif outcome.get("kind") == "overlap" and inputs is not None:
         st.info(
             "NSS serves more than one equation set for this area (superseded and current "

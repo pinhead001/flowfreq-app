@@ -483,3 +483,118 @@ def test_coverage_toggle_switches_the_overlay(monkeypatch, recorders):
 def test_mode_defaults_from_theme(monkeypatch, theme, mode):
     monkeypatch.setattr(ungaged_ui, "_theme_type", lambda: theme)
     assert ungaged_ui.default_mode() == mode
+
+
+# --- Results on the map: basin, GeoJSON download, other states ------------------------
+
+TWO_STATE_BASIN = {
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+            [[-108.1, 44.9], [-107.9, 44.9], [-107.9, 45.1], [-108.1, 45.1], [-108.1, 44.9]]
+        ],
+    },
+}
+MT_INPUTS = {
+    "lat": 45.05,
+    "lon": -108.0,
+    "state": "MT",
+    "aeps": [],
+    "snapshot": False,
+    "extrapolate": False,
+}
+
+
+def _estimate_with_basin(basin, state="MT"):
+    est = _estimate()
+    est.state = state
+    est.provenance = {"snap": {"snapped_lat": 45.051, "snapped_lon": -108.001}}
+    # flowfreq >= 0.18 carries this field; set it on older releases' instances too.
+    est.basin_geojson = basin
+    return est
+
+
+def _seeded_matching(monkeypatch, outcome, inputs=MT_INPUTS):
+    """Run with the widgets matching ``inputs`` and ``outcome`` stored."""
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["ungaged_lat"] = inputs["lat"]
+    at.session_state["ungaged_lon"] = inputs["lon"]
+    at.session_state["ungaged_state"] = inputs["state"]
+    at.session_state["ungaged_result"] = {"inputs": inputs, "outcome": outcome}
+    return at.run(), stub
+
+
+def _labels(at):
+    return [d.proto.label for d in at.get("download_button")]
+
+
+def test_estimate_basin_reaches_the_component_and_download(monkeypatch, recorders):
+    est = _estimate_with_basin(BASIN)
+    at, stub = _seeded_matching(monkeypatch, {"estimate": est})
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is BASIN
+    assert stub.calls[-1]["snap"] == (45.051, -108.001)
+    assert "Download basin (GeoJSON)" in _labels(at)
+
+
+def test_estimate_without_basin_shows_table_only(monkeypatch, recorders):
+    est = _estimate_with_basin(None)
+    at, stub = _seeded_matching(monkeypatch, {"estimate": est})
+    assert not at.exception
+    assert at.dataframe
+    assert stub.calls[-1]["basin"] is None
+    assert "Download basin (GeoJSON)" not in _labels(at)
+
+
+def test_delineation_result_shows_caption_and_download_no_table(monkeypatch, recorders):
+    outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+    at, stub = _seeded_matching(monkeypatch, outcome)
+    assert not at.exception
+    assert any("142.3 sq mi" in c.value and "Press Estimate" in c.value for c in at.caption)
+    assert not at.dataframe
+    assert "Download basin (GeoJSON)" in _labels(at)
+    assert stub.calls[-1]["basin"] is BASIN
+    assert stub.calls[-1]["snap"] == (46.9312, -113.9688)
+
+
+def test_other_states_offered_for_a_two_state_basin(monkeypatch, recorders):
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    assert not at.exception
+    assert any("also lies in WY" in i.value for i in at.info)
+    rerun = [b for b in at.button if b.label == "Re-run with WY"]
+    assert rerun
+    rerun[0].click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["ungaged_state"] == "WY"
+    assert [kw["state"] for _, _, kw in recorders["estimate"]] == ["WY"]
+
+
+def test_no_other_states_for_a_one_state_basin(monkeypatch, recorders):
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(BASIN)})
+    assert not [b for b in at.button if b.label.startswith("Re-run with")]
+
+
+def test_basin_download_name():
+    name = ungaged_ui.basin_download_name("MT", 46.87, -113.99)
+    assert name == "ungaged_MT_46.8700_-113.9900.geojson"
+
+
+def test_estimate_button_hands_the_basin_to_the_map(monkeypatch):
+    est = _estimate_with_basin(BASIN)
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", lambda lat, lon, **kw: est)
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["ungaged_lat"] = 45.05
+    at.session_state["ungaged_lon"] = -108.0
+    at.session_state["ungaged_state"] = "MT"
+    at.run()
+    [b for b in at.button if b.label == "Estimate"][0].click()
+    at.run()
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is BASIN  # the rerun after Estimate reached the map
