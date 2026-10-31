@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### flowfreq v0.19.0
+
+The pin moves from v0.18.0 to v0.19.0. Existing calls are unchanged. What it adds for the app:
+- `flowfreq.streamstats.delineate_watershed`: the watershed polygon without the ss-hydro
+  basin-characteristics request, for the basin map's Delineate action. It still works when
+  ss-hydro alone is down (it returned 502 all night on 2026-10-31).
+- Library-only additions the app does not call yet: `flowfreq.stationarity`,
+  `flowfreq.naturalize`, monthly and duration transfer variance, and a more robust GLS fit.
+
 ### flowfreq v0.18.0
 
 The pin moves from v0.17.0 to v0.18.0. Existing calls are unchanged. What it adds for the app:
