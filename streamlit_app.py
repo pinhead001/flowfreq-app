@@ -38,6 +38,7 @@ from flowfreq.workflow import (
     run_ffa,
 )
 
+import gage_ui
 import ungaged_ui
 from ffa_export import export_comparison_csv, export_ffa_to_zip
 from ffa_runner import format_parameters_df, format_quantile_df, skew_source_label
@@ -371,7 +372,8 @@ st.markdown(
 PAGE_GAGED = "Gaged site"
 PAGE_UNGAGED = "Ungaged site"
 PAGE_GAGE = "Gage"
-_PAGE_PARAMS = {"ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+_PAGE_PARAMS = {"gaged": PAGE_GAGED, "ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+_SITE_RE = re.compile(r"\d{8,15}")
 
 
 def requested_page(params: Mapping[str, str]) -> Optional[str]:
@@ -384,20 +386,16 @@ def requested_page(params: Mapping[str, str]) -> Optional[str]:
 
 
 requested = requested_page(st.query_params)
+# A site number from the URL (?site=), checked before it reaches any page or markdown.
+linked_site = st.query_params.get("site", "")
+linked_site = linked_site if _SITE_RE.fullmatch(linked_site) else ""
+
 if requested == PAGE_GAGE:
-    # Placeholder until the gage page exists (TODO.md, Spec 2). The site number comes from
-    # the URL, so it is checked before it reaches any markdown.
-    site = st.query_params.get("site", "")
-    st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
-    if not re.fullmatch(r"\d{8,15}", site):
-        st.error("That is not a valid USGS site number (8 to 15 digits).")
+    if linked_site:
+        gage_ui.render(linked_site)
     else:
-        st.header(f"Gage {site}")
-        st.info(
-            "The gage page is coming: period of record for daily and peak flows, "
-            "Bulletin 17C, hydrographs. Meanwhile, see "
-            f"https://waterdata.usgs.gov/monitoring-location/{site}/"
-        )
+        st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
+        st.error("That is not a valid USGS site number (8 to 15 digits).")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 
@@ -422,7 +420,9 @@ st.sidebar.header("Input Parameters")
 input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
-    gage_input = st.sidebar.text_input("USGS Gage Number", value="12358500")
+    # A gage page's "Run Bulletin 17C" link arrives as ?page=gaged&site=NNNNNNNN.
+    default_gage = linked_site if requested == PAGE_GAGED and linked_site else "12358500"
+    gage_input = st.sidebar.text_input("USGS Gage Number", value=default_gage)
     gage_list = [gage_input.strip()] if gage_input else []
 else:
     gage_input = st.sidebar.text_area(

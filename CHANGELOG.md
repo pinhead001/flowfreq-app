@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Gage page
+
+- **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show); **Run Bulletin 17C on this site**, which opens the Gaged page with the site filled in (`?page=gaged&site=`), in the same tab; links to the USGS pages. Lookups are cached for six hours and never raise: a failed or unknown site is reported on the page.
+
 ### Basin map on the Ungaged-site page, flowfreq v0.18.0
 
 The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
