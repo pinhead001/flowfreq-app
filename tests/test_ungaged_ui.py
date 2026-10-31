@@ -18,6 +18,15 @@ pytest.importorskip("streamlit", reason="Streamlit not installed")
 from flowfreq import OverlappingRegionsError
 from flowfreq.regression.equations import OutOfRangeError
 from flowfreq.regression.library import EquationsUnavailable
+from flowfreq.streamstats import (
+    Characteristic,
+    DegenerateDelineationError,
+    Provenance,
+    SnapResult,
+    UnsnappablePointError,
+    UnsupportedRegionError,
+    WatershedCharacteristics,
+)
 from flowfreq.ungaged import QUANTILE_COLUMNS, SiteEstimate
 from streamlit.testing.v1 import AppTest
 
@@ -119,6 +128,82 @@ def test_run_estimate_overlap_carries_candidates(monkeypatch):
     assert out["kind"] == "overlap"
     assert out["candidates"] == CANDIDATES
     assert "GC2016" in out["error"]
+
+
+BASIN = {
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-113.97, 46.93], [-114.0, 47.0], [-113.9, 47.05], [-113.97, 46.93]]],
+    },
+}
+
+
+def _watershed(polygon=BASIN, area=142.3) -> WatershedCharacteristics:
+    return WatershedCharacteristics(
+        region="MT",
+        snap=SnapResult(46.93, -113.97, 46.9312, -113.9688, True, 13.2),
+        polygon_geojson=polygon,
+        characteristics={"DRNAREA": Characteristic("DRNAREA", "Drainage area", "", area, "mi2")},
+        provenance=Provenance(
+            service_versions={},
+            request_urls=[],
+            requested_at_utc="2026-10-30T00:00:00+00:00",
+            server_used="test",
+        ),
+        polygon_area_sq_mi=area,
+    )
+
+
+def test_run_delineation_success(monkeypatch):
+    ws = _watershed()
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: ws)
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out == {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+
+
+def test_run_delineation_asks_for_drainage_area_only(monkeypatch):
+    seen = {}
+
+    def fake(*args, **kw):
+        seen.update(args=args, **kw)
+        return _watershed()
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake)
+    ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert seen["args"] == ("MT", 46.93, -113.97)
+    assert seen["characteristic_codes"] == ["DRNAREA"]
+
+
+def test_run_delineation_without_a_polygon_is_an_input_error(monkeypatch):
+    monkeypatch.setattr(
+        ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: _watershed(polygon=None)
+    )
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out["kind"] == "input" and "polygon" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "exc, kind",
+    [
+        (UnsnappablePointError("no stream within reach of the point"), "input"),
+        (DegenerateDelineationError("degenerate watershed"), "input"),
+        (UnsupportedRegionError("FL has no StreamStats service"), "input"),
+        (ValueError("bad coordinate"), "input"),
+        (requests.ConnectionError("StreamStats down"), "network"),
+        (RuntimeError("boom"), "unexpected"),
+    ],
+)
+def test_run_delineation_never_raises(monkeypatch, exc, kind):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out["kind"] == kind
+    assert str(exc) in out["error"]
+    assert "basin" not in out
 
 
 def _page():

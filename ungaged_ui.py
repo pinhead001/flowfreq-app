@@ -23,6 +23,7 @@ from flowfreq import OverlappingRegionsError, estimate_at_site
 from flowfreq.regression import JURISDICTIONS, available_states, nss_snapshot_states
 from flowfreq.regression.equations import OutOfRangeError
 from flowfreq.regression.library import EquationsUnavailable
+from flowfreq.streamstats import delineate_and_get_characteristics
 from flowfreq.ungaged import SiteEstimate
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,49 @@ def run_estimate(
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
     return {"estimate": estimate}
+
+
+def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
+    """Delineate the basin at a point, without equations. Never raises.
+
+    The map's *Delineate* action. Asks StreamStats for the drainage area only; the
+    library's StreamStats cache is shared with :func:`run_estimate`, so an *Estimate* at
+    the same point afterwards does not delineate again.
+
+    Parameters
+    ----------
+    lat, lon : float
+        The pour point, decimal degrees.
+    state : str
+        StreamStats region (jurisdiction code).
+
+    Returns
+    -------
+    dict
+        ``{"basin": Feature, "snap": (lat, lon), "area_sq_mi": float}``, or
+        ``{"error": str, "kind": str}`` with ``kind`` one of ``input`` (including an
+        unsnappable point, a degenerate delineation and a region StreamStats does not
+        serve), ``network`` or ``unexpected``.
+    """
+    try:
+        ws = delineate_and_get_characteristics(state, lat, lon, characteristic_codes=["DRNAREA"])
+    except ValueError as exc:  # unsnappable, degenerate, unsupported region, bad input
+        return {"error": str(exc), "kind": "input"}
+    except requests.RequestException as exc:
+        return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
+    except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
+        logger.exception("delineation failed")
+        return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    if ws.polygon_geojson is None:
+        return {"error": "StreamStats returned no watershed polygon here.", "kind": "input"}
+    area = ws.polygon_area_sq_mi
+    if area is None and "DRNAREA" in ws:
+        area = ws["DRNAREA"].value
+    return {
+        "basin": ws.polygon_geojson,
+        "snap": (ws.snap.snapped_lat, ws.snap.snapped_lon),
+        "area_sq_mi": area,
+    }
 
 
 def _state_label(code: str) -> str:
