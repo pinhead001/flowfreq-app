@@ -9,7 +9,7 @@ import logging
 import os
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -369,7 +369,38 @@ st.markdown(
 
 PAGE_GAGED = "Gaged site"
 PAGE_UNGAGED = "Ungaged site"
-page = st.sidebar.radio("Page", [PAGE_GAGED, PAGE_UNGAGED], horizontal=True)
+PAGE_GAGE = "Gage"
+_PAGE_PARAMS = {"ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+
+
+def requested_page(params: Mapping[str, str]) -> Optional[str]:
+    """The page a ``?page=`` query parameter asks for, or ``None``.
+
+    The sidebar radio is the normal navigation; the parameter exists so a link -- the
+    basin map's gage popup -- can land on a page. ``gage`` takes ``&site=NNNNNNNN``.
+    """
+    return _PAGE_PARAMS.get(params.get("page", ""))
+
+
+requested = requested_page(st.query_params)
+if requested == PAGE_GAGE:
+    # Placeholder until the gage page exists (TODO.md, Spec 2).
+    site = st.query_params.get("site", "")
+    st.header(f"Gage {site}")
+    st.info(
+        "The gage page is coming: period of record for daily and peak flows, Bulletin 17C, "
+        f"hydrographs. Meanwhile, see https://waterdata.usgs.gov/monitoring-location/{site}/"
+    )
+    st.sidebar.markdown(f"**flowfreq** v{__version__}")
+    st.stop()
+
+page = st.sidebar.radio(
+    "Page",
+    [PAGE_GAGED, PAGE_UNGAGED],
+    index=1 if requested == PAGE_UNGAGED else 0,
+    horizontal=True,
+    on_change=st.query_params.clear,  # choosing a page by hand drops the link's parameter
+)
 
 if page == PAGE_UNGAGED:
     ungaged_ui.render()
