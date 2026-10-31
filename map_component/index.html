@@ -20,10 +20,30 @@
   .orb::before { background: var(--orb); box-shadow: 0 0 10px 2px var(--orb); }
   .orb::after { border: 2px solid var(--orb); animation: pulse 1.6s ease-out infinite; }
   @keyframes pulse { from { transform: scale(1); opacity: .85; } to { transform: scale(2.6); opacity: 0; } }
+
+  .chips { position: absolute; left: 10px; bottom: 10px; display: flex; flex-direction: column;
+    gap: 6px; align-items: flex-start; pointer-events: none; z-index: 2; }
+  .chip { padding: 4px 8px; border-radius: 4px; background: var(--chip-bg); color: var(--chip-fg);
+    border: 1px solid var(--chip-border); backdrop-filter: blur(3px); }
+  .chip[hidden] { display: none; }
+  .swatch { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 8px;
+    vertical-align: -1px; border-radius: 2px; }
+  .swatch:first-child { margin-left: 0; }
+  .maplibregl-ctrl-attrib { background: var(--chip-bg) !important; color: var(--chip-fg); }
+  .maplibregl-ctrl-attrib a { color: var(--chip-fg); }
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div class="chips">
+  <div class="chip" id="chip-grid" hidden></div>
+  <div class="chip" id="chip-coverage" hidden>
+    <span class="swatch" style="background:#2e9e4f"></span>verified
+    <span class="swatch" style="background:#d6b11f"></span>partial
+    <span class="swatch" style="background:#e07b24"></span>snapshot
+    <span class="swatch" style="background:transparent;border:1px solid currentColor"></span>none
+  </div>
+</div>
 <script>
 "use strict";
 
@@ -42,6 +62,7 @@ function setValue(value) {
 // ---------------------------------------------------------------------------
 const MODES = {
   dem: {
+    chip: { bg: "rgba(255,255,255,0.85)", fg: "#222", border: "#999" },
     background: "#d9d9d9",
     shade: { kind: "grey", levels: 14, water: [207, 211, 214, 255] },
     rivers: { brightnessMin: 0, brightnessMax: 1, saturation: 0, hueRotate: 0, opacity: 0.9 },
@@ -52,10 +73,11 @@ const MODES = {
     basin: "#b45309",
   },
   night: {
+    chip: { bg: "rgba(10,14,28,0.8)", fg: "#cfd8ff", border: "#3a4670" },
     background: "#000000",
     shade: { kind: "tint", shadow: [0, 0, 0], highlight: [120, 140, 190], flat: 0.28, gain: 1.6,
              alpha: 170, levels: 0 },
-    rivers: { brightnessMin: 0.35, brightnessMax: 1, saturation: 0.6, hueRotate: 0, opacity: 0.85 },
+    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.35, hueRotate: 180, opacity: 0.9 },
     stateLine: { color: "#99aaaa", opacity: 0.6 },
     marker: "#39ff14",
     streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
@@ -63,11 +85,12 @@ const MODES = {
     basin: "#39ff14",
   },
   green: {
+    chip: { bg: "rgba(2,20,12,0.8)", fg: "#9dffc8", border: "#1f8f5f" },
     background: "#06100c",
     shade: { kind: "iridescent", shadow: [1, 6, 4], base: [8, 46, 30], highlight: [125, 255, 179],
              accentA: [95, 216, 255], accentB: [182, 255, 106], flat: 0.3, gain: 1.7,
              alpha: 255, levels: 0 },
-    rivers: { brightnessMin: 0.3, brightnessMax: 1, saturation: -0.3, hueRotate: -60, opacity: 0.8 },
+    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.1, hueRotate: 140, opacity: 0.85 },
     stateLine: { color: "#55ffdd", opacity: 0.5 },
     marker: "#39ff14",
     streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
@@ -77,6 +100,16 @@ const MODES = {
 };
 
 const CONUS = [[-125, 24], [-66.5, 49.5]];
+const STREAMGRID_MINZOOM = 13;
+const STREAMSTATS = "https://gis.streamstats.usgs.gov/arcgis/rest/services";
+// Every StreamStats state service, from STREAMSTATS + "/stateServices?f=pjson" on
+// 2026-10-30: states, PR, DC, and six river-basin services. A state missing here (FL,
+// NE, GU, ...) has no StreamStats grid, and the chip says so.
+const STREAMGRID_SERVICES = ["ak", "al", "ar", "az", "ca", "co", "crb", "ct", "dc", "de", "drb",
+  "ga", "hi", "ia", "id", "il", "in", "ks", "ky", "la", "ma", "md", "me", "mn", "mo", "mo_stl",
+  "mrb", "ms", "mt", "nc", "nd", "nh", "nj", "nm", "nrb", "nv", "ny", "oh", "ok", "or", "pa",
+  "pr", "ri", "rrb", "sc", "sd", "tn", "tx", "ut", "va", "vt", "wa", "wi", "wv", "wy"];
+const BASIN_SERVICES = ["crb", "drb", "mo_stl", "mrb", "nrb", "rrb"];
 const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
 
 // ---------------------------------------------------------------------------
@@ -204,16 +237,28 @@ function createMap(args) {
         "shade-coarse": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 1024, maxzoom: 13,
           attribution: "Terrain: Mapzen/AWS Terrain Tiles" },
         "shade-fine": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 256, maxzoom: 15 },
+        lights: { type: "raster", tileSize: 256, maxzoom: 8,
+          tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/" +
+                  "2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"],
+          attribution: "Night lights: NASA Black Marble" },
+        // NHD flowlines and WBD units with the server's own scale-dependent rendering:
+        // HUC2/4 and large rivers far out, HUC12 and small streams close in.
+        hydro: { type: "raster", tileSize: 256, maxzoom: 16,
+          tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSHydroCached/MapServer/tile/{z}/{y}/{x}"],
+          attribution: "Hydrography: USGS The National Map" },
         states: { type: "geojson", data: "./states.geojson", promoteId: "code",
           attribution: "Boundaries: US Census TIGERweb" },
       },
       layers: [
         { id: "background", type: "background", paint: { "background-color": MODES[args.mode].background } },
+        { id: "lights", type: "raster", source: "lights", layout: { visibility: "none" },
+          paint: { "raster-opacity": 0.9 } },
         { id: "shade-coarse", type: "raster", source: "shade-coarse",
           paint: { "raster-resampling": "nearest", "raster-fade-duration": 0,
                    "raster-opacity": ["interpolate", ["linear"], ["zoom"], 10, 1, 12, 0] } },
         { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9,
           paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 9.5, 0, 11.5, 1] } },
+        { id: "hydro", type: "raster", source: "hydro" },
         { id: "state-fill", type: "fill", source: "states", layout: { visibility: "none" },
           paint: { "fill-opacity": 0.25,
                    "fill-color": ["match", ["coalesce", ["feature-state", "tint"], ""],
@@ -234,6 +279,102 @@ function createMap(args) {
   map.on("click", (e) => {
     setValue({ action: "point", lat: e.lngLat.lat, lon: e.lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
   });
+  map.on("moveend", updateStreamGrid);
+}
+
+// ---------------------------------------------------------------------------
+// StreamGrid: the StreamStats stream cells, from each state's own map service.
+// Shown from STREAMGRID_MINZOOM in, one raster source per service in view, so a
+// user can see which cells will snap and delineate before clicking.
+// ---------------------------------------------------------------------------
+let stateIndex = null;               // [{code, boxes: [[w, s, e, n], ...]}]
+const gridLayerIds = new Map();      // service -> "31,32,33" | null (no StreamGrid layer)
+const basinExtents = new Map();      // basin service -> [w, s, e, n]
+const gridAdded = new Set();
+
+async function loadStateIndex() {
+  if (stateIndex) return stateIndex;
+  const fc = await (await fetch("./states.geojson")).json();
+  stateIndex = fc.features.map((f) => {
+    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    return { code: f.properties.code, boxes: polys.map((p) => {
+      let w = 180, s = 90, e = -180, n = -90;
+      for (const [x, y] of p[0]) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
+      return [w, s, e, n];
+    }) };
+  });
+  return stateIndex;
+}
+
+const overlaps = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+
+async function gridLayers(service) {
+  if (gridLayerIds.has(service)) return gridLayerIds.get(service);
+  let ids = null;
+  try {
+    const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer/layers?f=json`)).json();
+    const grid = info.layers.filter((l) => l.name === "StreamGrid").map((l) => l.id);
+    ids = grid.length ? grid.join(",") : null;
+  } catch (err) { ids = null; }
+  gridLayerIds.set(service, ids);
+  return ids;
+}
+
+async function basinExtent(service) {
+  if (basinExtents.has(service)) return basinExtents.get(service);
+  let box = null;
+  try {
+    const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer?f=json`)).json();
+    const e = info.fullExtent, r = 6378137;
+    const lon = (x) => (x / r) * 180 / Math.PI;
+    const lat = (y) => (2 * Math.atan(Math.exp(y / r)) - Math.PI / 2) * 180 / Math.PI;
+    box = [lon(e.xmin), lat(e.ymin), lon(e.xmax), lat(e.ymax)];
+  } catch (err) { box = null; }
+  basinExtents.set(service, box);
+  return box;
+}
+
+function addGrid(service, ids) {
+  if (gridAdded.has(service)) return;
+  gridAdded.add(service);
+  map.addSource(`sg-${service}`, { type: "raster", tileSize: 256, minzoom: STREAMGRID_MINZOOM,
+    tiles: [`${STREAMSTATS}/stateServices/${service}/MapServer/export?bbox={bbox-epsg-3857}` +
+            `&bboxSR=3857&imageSR=3857&size=256,256&layers=show:${ids}&transparent=true&format=png32&f=image`],
+    attribution: "StreamGrid: USGS StreamStats" });
+  map.addLayer({ id: `sg-${service}`, type: "raster", source: `sg-${service}`, minzoom: STREAMGRID_MINZOOM,
+    paint: Object.assign({ "raster-resampling": "nearest", "raster-opacity": 0.9 },
+                         gridPaint(MODES[last ? last.mode : "dem"])) }, "state-fill");
+}
+
+function gridPaint(m) {
+  // The services draw one colour; nudge it toward the mode's palette.
+  return { "raster-hue-rotate": m.streamgrid.hueRotate, "raster-saturation": m.streamgrid.saturation,
+           "raster-brightness-min": m.streamgrid.brightnessMin };
+}
+
+async function updateStreamGrid() {
+  const chip = document.getElementById("chip-grid");
+  if (map.getZoom() < STREAMGRID_MINZOOM) { chip.hidden = true; return; }
+  const b = map.getBounds(), view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  const index = await loadStateIndex();
+  const inView = index.filter((s) => s.boxes.some((box) => overlaps(box, view))).map((s) => s.code);
+  const served = [], unserved = [];
+  for (const code of inView) {
+    const service = code.toLowerCase();
+    const ids = STREAMGRID_SERVICES.includes(service) ? await gridLayers(service) : null;
+    if (ids) { served.push(code); addGrid(service, ids); } else { unserved.push(code); }
+  }
+  for (const service of BASIN_SERVICES) {
+    const box = await basinExtent(service);
+    if (box && overlaps(box, view)) {
+      const ids = await gridLayers(service);
+      if (ids) addGrid(service, ids);
+    }
+  }
+  chip.hidden = inView.length === 0;
+  chip.textContent = served.length
+    ? `StreamGrid: click a lit cell${unserved.length ? ` (none for ${unserved.join(", ")})` : ""}`
+    : `no StreamStats grid for ${unserved.join(", ")}`;
 }
 
 function applyMode(mode) {
@@ -244,8 +385,21 @@ function applyMode(mode) {
     map.getSource("shade-fine").setTiles(shadeTiles(mode));
     shadeMode = mode;
   }
+  map.setLayoutProperty("lights", "visibility", mode === "night" ? "visible" : "none");
+  map.setPaintProperty("hydro", "raster-brightness-min", m.rivers.brightnessMin);
+  map.setPaintProperty("hydro", "raster-brightness-max", m.rivers.brightnessMax);
+  map.setPaintProperty("hydro", "raster-saturation", m.rivers.saturation);
+  map.setPaintProperty("hydro", "raster-hue-rotate", m.rivers.hueRotate);
+  map.setPaintProperty("hydro", "raster-opacity", m.rivers.opacity);
+  for (const service of gridAdded) {
+    for (const [prop, value] of Object.entries(gridPaint(m))) map.setPaintProperty(`sg-${service}`, prop, value);
+  }
   map.setPaintProperty("state-line", "line-color", m.stateLine.color);
   map.setPaintProperty("state-line", "line-opacity", m.stateLine.opacity);
+  const root = document.documentElement.style;
+  root.setProperty("--chip-bg", m.chip.bg);
+  root.setProperty("--chip-fg", m.chip.fg);
+  root.setProperty("--chip-border", m.chip.border);
   if (marker) marker.getElement().style.setProperty("--orb", m.marker);
 }
 
@@ -266,7 +420,9 @@ function applyCoverage(coverage, overlays) {
   for (const [code, badge] of Object.entries(coverage || {})) {
     map.setFeatureState({ source: "states", id: code }, { tint: coverageTint(badge) });
   }
-  map.setLayoutProperty("state-fill", "visibility", overlays.includes("coverage") ? "visible" : "none");
+  const on = overlays.includes("coverage");
+  map.setLayoutProperty("state-fill", "visibility", on ? "visible" : "none");
+  document.getElementById("chip-coverage").hidden = !on;
 }
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

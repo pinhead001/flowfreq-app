@@ -59,6 +59,17 @@ def test_html_pins_one_maplibre_version_and_only_https():
     assert "http://" not in HTML
 
 
+def test_html_lists_streamgrid_services():
+    # The StreamStats stateServices directory as of 2026-10-30: states, territories with
+    # a grid, and the river-basin services.
+    listed = re.search(r"STREAMGRID_SERVICES = \[([^\]]*)\]", HTML)
+    assert listed is not None
+    names = re.findall(r'"([a-z_]+)"', listed.group(1))
+    assert len(names) == 55
+    assert {"mt", "ak", "hi", "pr", "crb", "drb"} <= set(names)
+    assert "fl" not in names  # no StreamStats grid for Florida: the chip says so
+
+
 def test_prepare_args_rounds_and_hashes_the_basin():
     args = _args(basin=BASIN)
     ring = args["basin"]["geometry"]["coordinates"][0][0]
