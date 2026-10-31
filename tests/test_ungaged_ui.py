@@ -511,8 +511,7 @@ def _estimate_with_basin(basin, state="MT"):
     est = _estimate()
     est.state = state
     est.provenance = {"snap": {"snapped_lat": 45.051, "snapped_lon": -108.001}}
-    # flowfreq >= 0.18 carries this field; set it on older releases' instances too.
-    est.basin_geojson = basin
+    est.basin_geojson = basin  # SiteEstimate.basin_geojson, flowfreq >= 0.18
     return est
 
 

@@ -258,9 +258,9 @@ def _basin_payload(
     if "basin" in outcome:
         return outcome["basin"], outcome.get("snap")
     estimate = outcome.get("estimate")
-    basin = getattr(estimate, "basin_geojson", None)
-    if basin is None:
+    if estimate is None or estimate.basin_geojson is None:
         return None, None
+    basin = estimate.basin_geojson
     snapped = (estimate.provenance or {}).get("snap") or {}
     if "snapped_lat" in snapped and "snapped_lon" in snapped:
         return basin, (snapped["snapped_lat"], snapped["snapped_lon"])
@@ -345,7 +345,7 @@ def _show_estimate(estimate: SiteEstimate) -> None:
         file_name=f"ungaged_{estimate.state}_{estimate.lat:.4f}_{estimate.lon:.4f}.md",
         mime="text/markdown",
     )
-    basin = getattr(estimate, "basin_geojson", None)
+    basin = estimate.basin_geojson
     if basin is not None:
         _basin_download(basin, estimate.state, estimate.lat, estimate.lon)
         _offer_other_states(basin, estimate.state)
