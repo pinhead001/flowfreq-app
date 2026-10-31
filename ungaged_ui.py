@@ -53,6 +53,8 @@ AEP_CHOICES = (0.5, 0.2, 0.1, 0.04, 0.02, 0.01, 0.005, 0.002)
 RESULT_KEY = "ungaged_result"
 #: An estimate a callback asked for (the "Re-run with" buttons); run once inputs are read.
 PENDING_KEY = "ungaged_pending"
+#: The jurisdictions a queued comparison covers (the "Compare" button).
+COMPARE_KEY = "ungaged_compare"
 
 
 def coverage_badge(code: str) -> str:
@@ -452,6 +454,83 @@ def _rerun_in(code: str) -> None:
     st.session_state[PENDING_KEY] = "estimate"
 
 
+def comparison_frame(estimates: Dict[str, SiteEstimate]) -> pd.DataFrame:
+    """Each state's flow at each AEP, side by side, formatted for display.
+
+    Parameters
+    ----------
+    estimates : dict
+        Jurisdiction code to its estimate for the same basin, in display order.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``AEP (%)`` then one ``XX (cfs)`` column per state, largest AEP first; a state
+        that does not publish an AEP is blank there.
+    """
+    flows = {
+        code: dict(zip(e.quantiles["aep"], e.quantiles["flow_cfs"]))
+        for code, e in estimates.items()
+    }
+    aeps = sorted({a for per in flows.values() for a in per}, reverse=True)
+    rows = []
+    for aep in aeps:
+        row = {"AEP (%)": f"{aep * 100:g}"}
+        for code, per in flows.items():
+            value = per.get(aep)
+            row[f"{code} (cfs)"] = "" if value is None or pd.isna(value) else f"{value:,.0f}"
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["AEP (%)"] + [f"{c} (cfs)" for c in flows])
+
+
+def _compare_in(codes: List[str]) -> None:
+    # A callback: queue the comparison; render() runs it once the inputs are read.
+    st.session_state[PENDING_KEY] = "compare"
+    st.session_state[COMPARE_KEY] = list(codes)
+
+
+def _store_comparison(inputs: Dict[str, Any], codes: Sequence[str]) -> None:
+    result = st.session_state.get(RESULT_KEY)
+    if not result or "estimate" not in result.get("outcome", {}):
+        return
+    outcomes: Dict[str, Dict[str, Any]] = {inputs["state"]: result["outcome"]}
+    for code in codes:
+        if code == inputs["state"]:
+            continue
+        with st.spinner(f"Estimating with {code}'s equations..."):
+            outcomes[code] = run_estimate(
+                inputs["lat"],
+                inputs["lon"],
+                code,
+                inputs["aeps"],
+                inputs["snapshot"],
+                allow_extrapolation=inputs["extrapolate"],
+            )
+    result["compare"] = outcomes
+
+
+def _show_comparison(outcomes: Dict[str, Dict[str, Any]]) -> None:
+    st.subheader("Compared across states")
+    estimates = {code: o["estimate"] for code, o in outcomes.items() if "estimate" in o}
+    if len(estimates) > 1:
+        st.dataframe(comparison_frame(estimates), hide_index=True)
+        st.caption(
+            "Each column applies one state's published equations to the same basin. They "
+            "are separate reports with their own regions and characteristics, not parts of "
+            "one estimate."
+        )
+    for tab, (code, outcome) in zip(st.tabs(list(outcomes)), outcomes.items()):
+        with tab:
+            if "estimate" in outcome:
+                estimate = outcome["estimate"]
+                st.caption(
+                    f"Method: {estimate.method}. Equation library: {estimate.library_status}."
+                )
+                st.dataframe(_quantile_frame(estimate), hide_index=True)
+            else:
+                st.error(outcome.get("error", "No estimate."))
+
+
 def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
     codes = {j.code for j in JURISDICTIONS}
     others = [c for c in _basin_extras(basin)[1] if c != used and c in codes]
@@ -459,10 +538,21 @@ def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
         return
     st.info(
         f"This basin also lies in {', '.join(others)}. Each state's equations are its own "
-        "report; re-run to see another's."
+        "report: re-run with one, or compare them side by side."
     )
-    for col, code in zip(st.columns(len(others)), others):
+    cols = st.columns(len(others) + 1)
+    for col, code in zip(cols, others):
         col.button(f"Re-run with {code}", on_click=_rerun_in, args=(code,), key=f"rerun_{code}")
+    everyone = [used] + others
+    cols[-1].button(
+        f"Compare {', '.join(everyone[:-1])} and {everyone[-1]}",
+        on_click=_compare_in,
+        args=(everyone,),
+        key="compare_states",
+    )
+    compared = (st.session_state.get(RESULT_KEY) or {}).get("compare")
+    if compared:
+        _show_comparison(compared)
 
 
 def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
@@ -567,8 +657,11 @@ def render() -> None:
         if action == "point":
             st.rerun()  # the map was drawn with the old basin; redraw it without
 
-    if st.session_state.pop(PENDING_KEY, None) == "estimate":
+    pending = st.session_state.pop(PENDING_KEY, None)
+    if pending == "estimate":
         action = "estimate"
+    elif pending == "compare":
+        _store_comparison(current, st.session_state.pop(COMPARE_KEY, []))
     if action == "delineate":
         _store_basin(current)
         st.rerun()  # so the map receives the basin

@@ -709,3 +709,41 @@ def test_basin_extras_computed_once_per_basin(monkeypatch, recorders):
     at.run()
     assert not at.exception
     assert len(calls) == 1
+
+
+# --- Option B: compare the states a basin crosses -------------------------------------
+
+
+def test_comparison_frame_lines_up_aeps_across_states():
+    mt, wy = _estimate_with_basin(TWO_STATE_BASIN, "MT"), _estimate_with_basin(
+        TWO_STATE_BASIN, "WY"
+    )
+    wy.quantiles = wy.quantiles.assign(flow_cfs=[15000.0])
+    frame = ungaged_ui.comparison_frame({"MT": mt, "WY": wy})
+    assert list(frame.columns) == ["AEP (%)", "MT (cfs)", "WY (cfs)"]
+    assert frame.iloc[0].tolist() == ["1", "19,572", "15,000"]
+
+
+def test_compare_button_runs_each_state_and_shows_them_side_by_side(monkeypatch, recorders):
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    compare = [b for b in at.button if b.label.startswith("Compare")]
+    assert compare and "MT" in compare[0].label and "WY" in compare[0].label
+    compare[0].click()
+    at.run()
+    assert not at.exception
+    assert [kw["state"] for _, _, kw in recorders["estimate"]] == ["WY"]  # MT is already here
+    assert at.session_state["ungaged_state"] == "MT"  # the primary result is unchanged
+    assert any("WY (cfs)" in str(df.value.columns.tolist()) for df in at.dataframe)
+    assert [t.label for t in at.tabs] == ["MT", "WY"]
+
+
+def test_compare_shows_a_failed_state_in_its_tab(monkeypatch, recorders):
+    def failing(lat, lon, **kw):
+        raise EquationsUnavailable(f"{kw['state']}: no equations")
+
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", failing)
+    [b for b in at.button if b.label.startswith("Compare")][0].click()
+    at.run()
+    assert not at.exception
+    assert any("WY: no equations" in e.value for e in at.error)
