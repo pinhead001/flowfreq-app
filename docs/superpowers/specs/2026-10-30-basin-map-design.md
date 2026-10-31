@@ -8,8 +8,8 @@ Add an interactive map to the ungaged-site page so a user can zoom to a stream, 
 it, and get the delineated basin and its regional-regression flood quantiles — the
 page's existing workflow, with the map supplying the pour point and the jurisdiction.
 
-The map opens on the whole United States, including Alaska, Hawaii, Puerto Rico and
-the USVI, Guam and the CNMI, and American Samoa. Its default look is a pixelated
+The map opens on the conterminous United States and reaches Alaska, Hawaii, Puerto Rico
+and the USVI, Guam and the CNMI, and American Samoa through jump buttons. Its default look is a pixelated
 grayscale DEM in the manner of the early USGS 1:250,000 DEMs; a dark theme offers a
 night view (Black Marble city lights under the hillshade) and a green iridescent
 hillshade. Zoomed out, only major hydrologic units and large rivers show; zooming in
@@ -149,9 +149,10 @@ enumerated in the JS (list fetched once at build time, hard-coded with a comment
 pointing at the services directory).
 
 **Controls.** Jump buttons: CONUS, Alaska, Hawaii, Territories (cycles PR/USVI → Guam/
-CNMI → American Samoa). Zoom control. Initial view: `fitBounds` over a box covering
-Guam to the USVI and Am. Samoa to the Alaskan Arctic coast, so every territory is on
-screen at load; the jump buttons make the view usable in one click.
+CNMI → American Samoa). Zoom control. Initial view: `fitBounds` over CONUS, so the
+first paint is the familiar pixelated country; Alaska, Hawaii and the territories are one
+jump-button click away. (A Guam-to-USVI opening view was considered and rejected: it
+shows everything and makes nothing usable.)
 
 **Context menu.** `contextmenu` on the map (not on a gage feature) opens a small
 HTML menu at the cursor with the clicked coordinate as its header and four items:
