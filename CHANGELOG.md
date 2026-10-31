@@ -7,10 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Basin map on the Ungaged-site page, flowfreq v0.18.0
+### Basin map on the Ungaged-site page
 
-The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
-`SiteEstimate.basin_geojson`. The Streamlit floor rises to 1.40 (`st.segmented_control`).
+Draws the delineated watershed from `SiteEstimate.basin_geojson` (flowfreq v0.18.0). The
+Streamlit floor rises to 1.40 (`st.segmented_control`).
 
 - **Map above the inputs**, opening on CONUS with jump buttons to Alaska, Hawaii and the
   territories (PR/USVI, Guam/CNMI, American Samoa). Three styles: **DEM** (pixelated,
@@ -30,6 +30,25 @@ The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
   **GeoJSON download**. A basin crossing into another served jurisdiction offers
   "Re-run with XX".
 - `?page=ungaged` and `?page=gage&site=NNNNNNNN` open those pages directly.
+
+### flowfreq v0.19.0
+
+The pin moves from v0.18.0 to v0.19.0. Existing calls are unchanged. What it adds for the app:
+- `flowfreq.streamstats.delineate_watershed`: the watershed polygon without the ss-hydro
+  basin-characteristics request, for the basin map's Delineate action. It still works when
+  ss-hydro alone is down (it returned 502 all night on 2026-10-31).
+- Library-only additions the app does not call yet: `flowfreq.stationarity`,
+  `flowfreq.naturalize`, monthly and duration transfer variance, and a more robust GLS fit.
+
+### flowfreq v0.18.0
+
+The pin moves from v0.17.0 to v0.18.0. Existing calls are unchanged. What it adds for the app:
+- `SiteEstimate.basin_geojson`, the delineated watershed polygon, which the basin map needs.
+- Ungaged estimates in Wyoming region 1 (outlet longitude taken from the pour point) and in
+  Minnesota's Rainy River Basin (GC1775).
+- Regional skew by hydrologic unit in NY, PA, VA, WV, MA, LA, KY, TN and Alaska. In Alaska,
+  `regional_skew_for_site` now refuses a gage outside its skew area's drainage-area range
+  ("use station skew").
 
 ### flowfreq v0.17.0
 
