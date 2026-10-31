@@ -36,6 +36,8 @@ page itself (Spec 2).
 | Gage symbol | Hollow triangle. |
 | Gage popup | Site number, name, link to the in-app gage page (`?page=gage&site=…`), link to the USGS monitoring-location page. |
 | Marker | CSS-pulsing orb: green in Night and Green modes, amber in DEM mode. |
+| Left click | Fills latitude/longitude/jurisdiction only; the user presses Estimate. |
+| Right click | Context menu at the cursor: **Delineate** (basin only, no equations), **Estimate** (basin and quantiles), **Copy lat/lon**, **Zoom to point**. |
 
 ## Architecture
 
@@ -58,20 +60,38 @@ directory because `declare_component(path=...)` serves a directory.
 
 1. `render()` reads the number inputs and the stored result, computes the component
    args, and calls `basin_map(...)` once with a fixed `key`.
-2. The component returns `None` or `{"lat", "lon", "zoom", "nonce"}` for the latest
-   click. `nonce` is a counter the JS increments per click so two clicks at the same
-   spot are distinguishable.
-3. If the nonce differs from `st.session_state["map_click_nonce"]`, `render()` writes
+2. The component returns `None` or `{"action", "lat", "lon", "zoom", "nonce"}` for the
+   latest event that needs Python. `action` is `"point"` (left click), `"delineate"` or
+   `"estimate"` (context-menu items). `nonce` is a counter the JS increments per event
+   so two events at the same spot are distinguishable. Copy and Zoom-to-point are handled
+   entirely in the JS and never reach Python.
+3. If the nonce differs from `st.session_state["map_event_nonce"]`, `render()` writes
    lat/lon into the number inputs' session-state keys, sets the jurisdiction to
-   `state_at(lat, lon)` when that is a served jurisdiction, stores the nonce, and
-   `st.rerun()`s so the widgets show the new values. It does **not** run the estimate;
-   StreamStats calls stay deliberate.
+   `state_at(lat, lon)` when that is a served jurisdiction, and stores the nonce. Then,
+   by action: `"point"` → `st.rerun()` so the widgets show the new values, nothing else;
+   `"delineate"` → `_store_basin(...)` (below) then rerun; `"estimate"` → `_store(...)`,
+   the existing estimate path, then rerun. A left click never calls StreamStats; the two
+   menu items do so because the user asked by name.
 4. On every run the number inputs' current values go back as `point`, so the marker
    follows typing with no extra state.
 5. After an estimate, `outcome["estimate"].basin_geojson` (coordinates rounded to 6 dp,
    plus a short content hash) is passed as `basin`; the map fits to it and draws it with
-   the snapped pour point from `provenance["snap"]`. The existing stale-result logic
-   clears it when inputs change.
+   the snapped pour point from `provenance["snap"]`. After a delineation only, the
+   stored outcome is `{"basin": Feature, "snap": (lat, lon), "area_sq_mi": float}` and the
+   page shows a one-line caption ("Basin delineated: 142.3 sq mi. Press Estimate for
+   quantiles.") plus the GeoJSON download, no quantile table. The existing stale-result
+   logic clears either when inputs change.
+
+### Delineate only
+
+`run_delineation(lat, lon, state) -> dict` in `ungaged_ui.py`, the sibling of
+`run_estimate` and like it never raises: calls
+`flowfreq.streamstats.delineate_and_get_characteristics(state, lat, lon,
+characteristic_codes=["DRNAREA"])` and returns `{"basin", "snap", "area_sq_mi"}` or
+`{"error", "kind"}` with the same `kind` vocabulary (`input`, `network`, `unexpected`;
+`UnsnappablePointError` and `DegenerateDelineationError` map to `input` with the
+library's message). It shares the library's StreamStats cache with `estimate_at_site`,
+so Delineate followed by Estimate pays for one delineation.
 
 ## The component
 
@@ -132,6 +152,15 @@ pointing at the services directory).
 CNMI → American Samoa). Zoom control. Initial view: `fitBounds` over a box covering
 Guam to the USVI and Am. Samoa to the Alaskan Arctic coast, so every territory is on
 screen at load; the jump buttons make the view usable in one click.
+
+**Context menu.** `contextmenu` on the map (not on a gage feature) opens a small
+HTML menu at the cursor with the clicked coordinate as its header and four items:
+*Delineate*, *Estimate*, *Copy lat/lon*, *Zoom to point*. Delineate and Estimate move
+the marker and send `{"action": ..., ...}` to Python. Copy writes `"lat, lon"` (6 dp)
+to the clipboard and flashes "copied" in the menu header. Zoom to point flies to z14
+centred on the coordinate, which also brings the StreamGrid into view. The menu closes
+on item choice, Escape, or any map interaction. The browser's own context menu is
+suppressed only over the map canvas.
 
 **Gage popup.** On click of a gage feature: a MapLibre popup with the site number and
 name (from the feature properties), a link `?page=gage&site=NNNNNNNN` that opens in the
@@ -235,10 +264,14 @@ Branch from the library's `main` (not `feat/outlet-coordinates`).
   → `None`; a point on the MT/WY line → exactly one code; `states_touching` on a
   hand-built two-state polygon; `round_coords` returns a copy at 6 dp.
 - `tests/test_ungaged_ui.py` additions in the existing `AppTest` style, with `basin_map`
-  monkeypatched to return a chosen click dict: a click fills lat/lon and jurisdiction; a
-  second click with a new nonce updates them; typing after a click changes the `point`
-  passed to the component; a multi-state basin shows re-run buttons; the GeoJSON
-  download appears only with a basin; mode defaults follow the theme option.
+  monkeypatched to return a chosen event dict: a `point` event fills lat/lon and
+  jurisdiction and calls neither library function; a second event with a new nonce
+  updates them, the same nonce is ignored; a `delineate` event calls the delineation
+  (monkeypatched) and shows the caption and GeoJSON download but no quantile table; an
+  `estimate` event calls `estimate_at_site` and shows the table; typing after a click
+  changes the `point` passed to the component; a multi-state basin shows re-run buttons;
+  mode defaults follow the theme option. `run_delineation` gets the same never-raises
+  parametrized test as `run_estimate`.
 - `tests/test_map_component.py` — `index.html` and `states.geojson` exist; the HTML
   pins one MapLibre version and contains no `http://` URL; args serialize to JSON with
   rounding applied and a hash present.
@@ -246,8 +279,10 @@ Branch from the library's `main` (not `feat/outlet-coordinates`).
   the query-param routing.
 - JS has no automated tests. `docs/map_manual_checks.md` lists: three modes; pixel
   blocks at z4 vs smooth at z12; StreamGrid appears at z13 and the chip names the state;
-  gage triangles at z8 and a popup with two links; the four jump buttons; a click fills
-  the inputs; a basin draws and fits after Estimate; a typed coordinate moves the orb.
+  gage triangles at z8 and a popup with two links; the four jump buttons; a left click
+  fills the inputs and nothing runs; right click opens the menu, each of its four items
+  works, and it closes on Escape; a basin draws and fits after Delineate and after
+  Estimate; a typed coordinate moves the orb.
 
 ## Open items (→ `TODO.md`)
 
