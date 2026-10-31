@@ -18,6 +18,15 @@ session-by-session detail is ever needed.
 
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 
+- **Restore the real names "Gulf of Mexico" and the lake labelled "Lake America".** The
+  labels come baked into the USGS `USGSHydroCached` raster tiles, so map styling cannot
+  rename them. Options: a label-free hydro source (e.g. the NHD/WBD map services exported
+  without annotation) with our own labels from a vector or GeoJSON source, or a small
+  GeoJSON of corrected water-body labels drawn over a label-free layer.
+- **Smaller gage symbols.** The hollow triangles (`triangle()` in
+  `map_component/index.html`, 16 px) crowd dense areas at zoom 8-9; shrink them, perhaps
+  scaling `icon-size` with zoom.
+
 - **Option B, cross-state comparison.** When the delineated basin touches more than one
   jurisdiction, run `estimate_at_site` once per state and show the results side by side
   (tabs), so the two states' equations can be compared for the same basin. One
