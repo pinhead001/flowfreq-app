@@ -28,7 +28,7 @@ One PR per phase, in this order. The follow-up entries below hold the detail.
    menu over gages, orb snaps back when Python rejects a click, one warning per malformed
    event, gage placeholder with a way back and a validated `site`, CLAUDE.md layout, the
    states build script checks its record limit and feature count.
-2. **Real water-body names** (spike first). Find a label-free hydro source that keeps
+2. **Real water-body names** (done 2026-10-31, branch `feat/water-names`). Find a label-free hydro source that keeps
    scale-dependent rivers and HUCs, then label water bodies ourselves.
 3. **Library delineate-only call** (flowfreq, next release). Polygon from `ss-delineate`
    without `ss-hydro`; the app's Delineate adopts it after the pin bump.
@@ -40,11 +40,6 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
 
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 
-- **Restore the real names "Gulf of Mexico" and the lake labelled "Lake America".** The
-  labels come baked into the USGS `USGSHydroCached` raster tiles, so map styling cannot
-  rename them. Options: a label-free hydro source (e.g. the NHD/WBD map services exported
-  without annotation) with our own labels from a vector or GeoJSON source, or a small
-  GeoJSON of corrected water-body labels drawn over a label-free layer.
 - **Option B, cross-state comparison.** When the delineated basin touches more than one
   jurisdiction, run `estimate_at_site` once per state and show the results side by side
   (tabs), so the two states' equations can be compared for the same basin. One
