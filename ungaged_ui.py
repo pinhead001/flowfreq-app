@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import logging
 import numbers
+import threading
+from collections import OrderedDict
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -79,6 +81,51 @@ def coverage_badge(code: str) -> str:
     return BADGE_NONE
 
 
+class BasinCache:
+    """A bounded, in-memory StreamStats result cache, safe across Streamlit threads.
+
+    Stands in for :class:`flowfreq.streamstats.StreamStatsCache`, whose ``get``/``set``
+    are all the library calls. That class writes one ever-growing JSON file under the
+    user's home and rewrites it on every set, which a shared server should not do; this
+    keeps the most recent ``maxsize`` results in memory and forgets the oldest.
+
+    Parameters
+    ----------
+    maxsize : int
+        Results kept. Each holds a basin polygon, tens to hundreds of KB.
+    """
+
+    def __init__(self, maxsize: int = 64) -> None:
+        self._maxsize = maxsize
+        self._data: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            value = self._data.get(key)
+            if value is not None:
+                self._data.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._data[key] = value
+            self._data.move_to_end(key)
+            while len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
+
+
+@st.cache_resource
+def _streamstats_cache() -> BasinCache:
+    """One StreamStats cache for the process, shared by Delineate and Estimate.
+
+    The library caches only when handed a cache. Sharing one, and asking both calls for
+    the same characteristics, means Estimate after Delineate at the same point reuses the
+    delineation instead of repeating a 10-30 s StreamStats round trip.
+    """
+    return BasinCache()
+
+
 def run_estimate(
     lat: float,
     lon: float,
@@ -123,6 +170,7 @@ def run_estimate(
             allow_nss_snapshot=allow_nss_snapshot,
             allow_extrapolation=allow_extrapolation,
             region=region,
+            cache=_streamstats_cache(),
         )
     except OverlappingRegionsError as exc:
         return {"error": str(exc), "kind": "overlap", "candidates": list(exc.candidates)}
@@ -148,9 +196,9 @@ def run_estimate(
 def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     """Delineate the basin at a point, without equations. Never raises.
 
-    The map's *Delineate* action. Asks StreamStats for the drainage area only; the
-    library's StreamStats cache is shared with :func:`run_estimate`, so an *Estimate* at
-    the same point afterwards does not delineate again.
+    The map's *Delineate* action. Asks StreamStats for the same characteristics as
+    :func:`run_estimate` through the same cache (:func:`_streamstats_cache`), so an
+    *Estimate* at the same point afterwards does not delineate again.
 
     Parameters
     ----------
@@ -168,7 +216,7 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
         serve), ``network`` or ``unexpected``.
     """
     try:
-        ws = delineate_and_get_characteristics(state, lat, lon, characteristic_codes=["DRNAREA"])
+        ws = delineate_and_get_characteristics(state, lat, lon, cache=_streamstats_cache())
     except ValueError as exc:  # unsnappable, degenerate, unsupported region, bad input
         return {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
@@ -226,6 +274,9 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
         The action applied, or ``None`` when there was no new, well-formed event.
     """
     if event is None:
+        # A map that has not sent anything: a fresh iframe (after a page switch, say),
+        # whose counter restarts, so forget the last nonce rather than collide with it.
+        st.session_state.pop("map_event_nonce", None)
         return None
     ok = (
         isinstance(event, dict)
@@ -241,7 +292,9 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
     if event["nonce"] == st.session_state.get("map_event_nonce"):
         return None  # the component keeps returning its last value; already applied
     st.session_state["map_event_nonce"] = event["nonce"]
-    lat, lon = round(float(event["lat"]), 6), round(float(event["lon"]), 6)
+    # A click on a repeated world copy arrives outside +-180; bring it back.
+    lon = (float(event["lon"]) + 180.0) % 360.0 - 180.0
+    lat, lon = round(float(event["lat"]), 6), round(lon, 6)
     st.session_state["ungaged_lat"] = lat
     st.session_state["ungaged_lon"] = lon
     code = state_at(lat, lon)
@@ -486,6 +539,8 @@ def render() -> None:
         # The widgets moved on: the result (and any overlap choice) belongs to old inputs.
         del st.session_state[RESULT_KEY]
         st.session_state.pop("ungaged_candidate", None)
+        if action == "point":
+            st.rerun()  # the map was drawn with the old basin; redraw it without
 
     if st.session_state.pop(PENDING_KEY, None) == "estimate":
         action = "estimate"

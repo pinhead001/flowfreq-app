@@ -138,6 +138,7 @@ const STREAMGRID_SERVICES = ["ak", "al", "ar", "az", "ca", "co", "crb", "ct", "d
   "pr", "ri", "rrb", "sc", "sd", "tn", "tx", "ut", "va", "vt", "wa", "wi", "wv", "wy"];
 const BASIN_SERVICES = ["crb", "drb", "mo_stl", "mrb", "nrb", "rrb"];
 const GAGE_MINZOOM = 8;
+const GAGE_MAX_RECORDS = 10000;  // paging stops here; a z8 view in the East holds ~2000
 const GAGES_QUERY = `${STREAMSTATS}/StreamStats/nationalLayers/MapServer/0/query`;
 const JUMPS = {
   conus: [CONUS],
@@ -249,7 +250,8 @@ function shadeTiles(mode) { return [`shade://${mode}/{z}/{x}/{y}`]; }
 // ---------------------------------------------------------------------------
 // The map
 // ---------------------------------------------------------------------------
-let map = null, last = null, marker = null, nonce = 0, ready = false, pending = null;
+// The nonce starts at the load time, so a remounted iframe never repeats one Python has seen.
+let map = null, last = null, marker = null, nonce = Date.now(), ready = false, pending = null;
 let shadeMode = null;  // the mode the shade sources currently request
 
 function coverageTint(badge) {
@@ -321,13 +323,14 @@ function createMap(args) {
     closeMenu();
     if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // the popup's
     // Move the orb now; Python's echo of the point arrives a rerun later.
-    applyPoint([e.lngLat.lat, e.lngLat.lng], last ? last.mode : "dem");
-    emit("point", e.lngLat);
+    const at = e.lngLat.wrap();  // a click on a repeated world copy, back inside +-180
+    applyPoint([at.lat, at.lng], last ? last.mode : "dem");
+    emit("point", at);
   });
   map.on("click", "gages", (e) => openGagePopup(e.features[0]));
   map.on("mouseenter", "gages", () => { map.getCanvas().style.cursor = "pointer"; });
   map.on("mouseleave", "gages", () => { map.getCanvas().style.cursor = ""; });
-  map.on("contextmenu", (e) => { e.preventDefault(); openMenu(e.point, e.lngLat); });
+  map.on("contextmenu", (e) => { e.preventDefault(); openMenu(e.point, e.lngLat.wrap()); });
   map.on("movestart", closeMenu);
   map.on("moveend", updateStreamGrid);
   map.on("moveend", scheduleGages);
@@ -390,13 +393,22 @@ async function updateGages() {
                r(b.getEast(), Math.ceil), r(b.getNorth(), Math.ceil)];
   const key = box.join(",");
   if (!gageCache.has(key)) {
-    const url = `${GAGES_QUERY}?where=1%3D1&geometry=${key}&geometryType=esriGeometryEnvelope` +
-                "&inSR=4326&outFields=STA_ID,STA_NAME&outSR=4326&f=geojson";
+    // The service returns at most 1000 records a request (maxRecordCount) and flags
+    // exceededTransferLimit when it stopped short: page with resultOffset until done.
+    const features = [];
     try {
-      const fc = await (await fetch(url)).json();
-      if (!fc.features) return;  // a service error; retried on the next moveend
-      gageCache.set(key, fc);
+      for (let offset = 0; offset < GAGE_MAX_RECORDS; offset += 1000) {
+        const url = `${GAGES_QUERY}?where=1%3D1&geometry=${key}&geometryType=esriGeometryEnvelope` +
+                    "&inSR=4326&outFields=STA_ID,STA_NAME&outSR=4326&orderByFields=OBJECTID" +
+                    `&resultOffset=${offset}&resultRecordCount=1000&f=geojson`;
+        const fc = await (await fetch(url)).json();
+        if (!fc.features) return;  // a service error; retried on the next moveend
+        features.push(...fc.features);
+        const more = fc.exceededTransferLimit || (fc.properties && fc.properties.exceededTransferLimit);
+        if (!more) break;
+      }
     } catch (err) { return; }
+    gageCache.set(key, { type: "FeatureCollection", features });
   }
   map.getSource("gages").setData(gageCache.get(key));
 }
@@ -524,28 +536,30 @@ const overlaps = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] 
 
 async function gridLayers(service) {
   if (gridLayerIds.has(service)) return gridLayerIds.get(service);
-  let ids = null;
+  // Returns the layer ids, null for a service with no StreamGrid layer, or undefined
+  // when the request failed. Only answers are cached; a failure is retried next moveend.
   try {
     const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer/layers?f=json`)).json();
+    if (!Array.isArray(info.layers)) return undefined;  // an ArcGIS error body
     const grid = info.layers.filter((l) => l.name === "StreamGrid").map((l) => l.id);
-    ids = grid.length ? grid.join(",") : null;
-  } catch (err) { ids = null; }
-  gridLayerIds.set(service, ids);
-  return ids;
+    const ids = grid.length ? grid.join(",") : null;
+    gridLayerIds.set(service, ids);
+    return ids;
+  } catch (err) { return undefined; }
 }
 
 async function basinExtent(service) {
   if (basinExtents.has(service)) return basinExtents.get(service);
-  let box = null;
   try {
     const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer?f=json`)).json();
     const e = info.fullExtent, r = 6378137;
+    if (!e) return undefined;  // an ArcGIS error body; retried next moveend
     const lon = (x) => (x / r) * 180 / Math.PI;
     const lat = (y) => (2 * Math.atan(Math.exp(y / r)) - Math.PI / 2) * 180 / Math.PI;
-    box = [lon(e.xmin), lat(e.ymin), lon(e.xmax), lat(e.ymax)];
-  } catch (err) { box = null; }
-  basinExtents.set(service, box);
-  return box;
+    const box = [lon(e.xmin), lat(e.ymin), lon(e.xmax), lat(e.ymax)];
+    basinExtents.set(service, box);
+    return box;
+  } catch (err) { return undefined; }
 }
 
 function addGrid(service, ids) {
@@ -572,11 +586,13 @@ async function updateStreamGrid() {
   const b = map.getBounds(), view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
   const index = await loadStateIndex();
   const inView = index.filter((s) => s.boxes.some((box) => overlaps(box, view))).map((s) => s.code);
-  const served = [], unserved = [];
+  const served = [], unserved = [], failed = [];
   for (const code of inView) {
     const service = code.toLowerCase();
     const ids = STREAMGRID_SERVICES.includes(service) ? await gridLayers(service) : null;
-    if (ids) { served.push(code); addGrid(service, ids); } else { unserved.push(code); }
+    if (ids) { served.push(code); addGrid(service, ids); }
+    else if (ids === undefined) failed.push(code);
+    else unserved.push(code);
   }
   for (const service of BASIN_SERVICES) {
     const box = await basinExtent(service);
@@ -586,9 +602,14 @@ async function updateStreamGrid() {
     }
   }
   chip.hidden = inView.length === 0;
+  const notes = [];
+  if (unserved.length) notes.push(`none for ${unserved.join(", ")}`);
+  if (failed.length) notes.push(`${failed.join(", ")} not reachable, retrying`);
   chip.textContent = served.length
-    ? `StreamGrid: click a lit cell${unserved.length ? ` (none for ${unserved.join(", ")})` : ""}`
-    : `no StreamStats grid for ${unserved.join(", ")}`;
+    ? `StreamGrid: click a lit cell${notes.length ? ` (${notes.join("; ")})` : ""}`
+    : failed.length && !unserved.length
+      ? `StreamStats grid for ${failed.join(", ")} not reachable; retrying on the next move`
+      : `no StreamStats grid for ${unserved.join(", ")}${failed.length ? ` (${notes[1]})` : ""}`;
 }
 
 function applyMode(mode) {

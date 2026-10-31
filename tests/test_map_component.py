@@ -111,3 +111,17 @@ def test_prepare_args_passes_none_through():
 def test_prepare_args_rejects_unknown_mode():
     with pytest.raises(ValueError, match="mode"):
         _args(mode="sepia")
+
+
+def test_html_wraps_click_longitudes():
+    # Clicks on a repeated world copy must reach Python inside +-180.
+    assert "lngLat.wrap()" in HTML
+
+
+def test_html_nonce_is_unique_per_page_load():
+    # A remounted iframe must not reuse nonces Python has already seen.
+    assert re.search(r"nonce = Date\.now\(\)", HTML)
+
+
+def test_html_pages_past_the_gage_record_limit():
+    assert "exceededTransferLimit" in HTML and "resultOffset" in HTML

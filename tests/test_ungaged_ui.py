@@ -163,7 +163,7 @@ def test_run_delineation_success(monkeypatch):
     assert out == {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
 
 
-def test_run_delineation_asks_for_drainage_area_only(monkeypatch):
+def test_run_delineation_asks_like_the_estimate(monkeypatch):
     seen = {}
 
     def fake(*args, **kw):
@@ -173,7 +173,27 @@ def test_run_delineation_asks_for_drainage_area_only(monkeypatch):
     monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake)
     ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert seen["args"] == ("MT", 46.93, -113.97)
-    assert seen["characteristic_codes"] == ["DRNAREA"]
+    # estimate_at_site asks for every characteristic; the same request shares its cache key.
+    assert seen.get("characteristic_codes") is None
+
+
+def test_estimate_and_delineation_share_one_streamstats_cache(monkeypatch):
+    caches = {}
+
+    def fake_delineate(*args, **kw):
+        caches["delineate"] = kw.get("cache")
+        return _watershed()
+
+    def fake_estimate(lat, lon, **kw):
+        caches["estimate"] = kw.get("cache")
+        return _estimate()
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
+    ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    ungaged_ui.run_estimate(46.93, -113.97, "MT", [], False)
+    assert caches["delineate"] is not None
+    assert caches["delineate"] is caches["estimate"]
 
 
 def test_run_delineation_without_a_polygon_is_an_input_error(monkeypatch):
@@ -597,3 +617,49 @@ def test_estimate_button_hands_the_basin_to_the_map(monkeypatch):
     at.run()
     assert not at.exception
     assert stub.calls[-1]["basin"] is BASIN  # the rerun after Estimate reached the map
+
+
+# --- Review fixes -------------------------------------------------------------------
+
+
+def test_wrapped_longitude_is_normalised(monkeypatch, recorders):
+    # A click on the world copy west of the antimeridian: Attu reported as -186.8.
+    at, _ = _with_map(monkeypatch, _event("point", lat=52.9, lon=-186.8))
+    assert not at.exception
+    assert at.session_state["ungaged_lon"] == pytest.approx(173.2)
+    assert at.session_state["ungaged_state"] == "AK"
+
+
+def test_nonce_restarts_after_the_map_remounts(monkeypatch, recorders):
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["map_event_nonce"] = 1  # from before a page switch
+    at.run()  # the remounted map has no value yet
+    stub.event = _event("point", nonce=1)  # its counter restarted
+    at.run()
+    assert at.session_state["ungaged_lat"] == 46.87
+
+
+def test_point_event_clears_the_drawn_basin(monkeypatch, recorders):
+    outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+    at, stub = _seeded_matching(monkeypatch, outcome)
+    assert stub.calls[-1]["basin"] is BASIN
+    stub.event = _event("point", lat=46.0, lon=-112.0, nonce=7)
+    at.run()
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is None  # the map no longer shows the old basin
+
+
+def test_basin_cache_is_bounded_and_in_memory():
+    cache = ungaged_ui.BasinCache(maxsize=2)
+    cache.set("a", {"n": 1})
+    cache.set("b", {"n": 2})
+    assert cache.get("a") == {"n": 1}  # touching "a" makes "b" the oldest
+    cache.set("c", {"n": 3})
+    assert cache.get("b") is None
+    assert cache.get("a") == {"n": 1} and cache.get("c") == {"n": 3}
+
+
+def test_shared_cache_is_the_in_memory_one():
+    assert isinstance(ungaged_ui._streamstats_cache(), ungaged_ui.BasinCache)
