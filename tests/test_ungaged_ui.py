@@ -341,3 +341,145 @@ def test_chosen_set_caption():
 
 def test_no_caption_without_a_choice():
     assert ungaged_ui.chosen_set_caption(_estimate()) == ""
+
+
+# --- The map: events from the component fill the inputs ------------------------------
+
+
+class _MapStub:
+    """Stands in for ``basin_map``: returns a chosen event and records its kwargs."""
+
+    def __init__(self, event=None):
+        self.event = event
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.event
+
+
+def _event(action="point", lat=46.87, lon=-113.99, nonce=1):
+    return {"action": action, "lat": lat, "lon": lon, "zoom": 9.0, "nonce": nonce}
+
+
+@pytest.fixture
+def recorders(monkeypatch):
+    calls = {"estimate": [], "delineate": []}
+
+    def fake_estimate(lat, lon, **kw):
+        calls["estimate"].append((lat, lon, kw))
+        return _estimate()
+
+    def fake_delineate(state, lat, lon, **kw):
+        calls["delineate"].append((state, lat, lon))
+        return _watershed()
+
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    return calls
+
+
+def _with_map(monkeypatch, event):
+    stub = _MapStub(event)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30).run()
+    return at, stub
+
+
+def test_point_event_fills_inputs_and_runs_nothing(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("point"))
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] == 46.87
+    assert at.session_state["ungaged_lon"] == -113.99
+    assert at.session_state["ungaged_state"] == "MT"
+    assert at.number_input[0].value == 46.87
+    assert recorders == {"estimate": [], "delineate": []}
+
+
+def test_same_nonce_is_ignored_on_rerun(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("point"))
+    at.number_input[0].set_value(45.0)
+    at.run()
+    assert at.session_state["ungaged_lat"] == 45.0  # the old click did not come back
+
+
+def test_new_nonce_updates_the_inputs(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, _event("point"))
+    stub.event = _event("point", lat=44.5, lon=-110.0, nonce=2)
+    at.run()
+    assert at.session_state["ungaged_lat"] == 44.5
+    assert at.session_state["ungaged_state"] == "WY"
+
+
+def test_ocean_click_leaves_jurisdiction(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, _event("point"))  # MT
+    stub.event = _event("point", lat=27.0, lon=-89.0, nonce=2)  # Gulf of Mexico
+    at.run()
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] == 27.0
+    assert at.session_state["ungaged_state"] == "MT"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"action": "point"},
+        {"action": "point", "lat": "north", "lon": -110.0, "nonce": 1},
+        {"action": "teleport", "lat": 45.0, "lon": -110.0, "nonce": 1},
+        "not a dict",
+    ],
+)
+def test_malformed_event_is_ignored(monkeypatch, recorders, caplog, event):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, event)
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] is None
+    assert any("map event" in r.getMessage() for r in caplog.records)
+
+
+def test_delineate_event_calls_delineation_only(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("delineate"))
+    assert not at.exception
+    assert recorders["delineate"] == [("MT", 46.87, -113.99)]
+    assert recorders["estimate"] == []
+
+
+def test_estimate_event_calls_estimate(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("estimate"))
+    assert not at.exception
+    assert len(recorders["estimate"]) == 1
+    lat, lon, kw = recorders["estimate"][0]
+    assert (lat, lon, kw["state"]) == (46.87, -113.99, "MT")
+    assert at.dataframe  # the quantile table
+
+
+def test_typed_coordinates_reach_the_component(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, None)
+    assert stub.calls[-1]["point"] is None
+    at.number_input[0].set_value(44.5)
+    at.number_input[1].set_value(-110.0)
+    at.run()
+    assert stub.calls[-1]["point"] == (44.5, -110.0)
+
+
+def test_coverage_passed_for_every_jurisdiction(monkeypatch, recorders):
+    from flowfreq.regression import JURISDICTIONS
+
+    _, stub = _with_map(monkeypatch, None)
+    coverage = stub.calls[-1]["coverage"]
+    assert set(coverage) == {j.code for j in JURISDICTIONS}
+    assert coverage["DC"] == ungaged_ui.BADGE_NONE
+
+
+def test_coverage_toggle_switches_the_overlay(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, None)
+    assert stub.calls[-1]["overlays"] == frozenset()
+    at.toggle[0].set_value(True)
+    at.run()
+    assert stub.calls[-1]["overlays"] == frozenset({"coverage"})
+
+
+@pytest.mark.parametrize("theme, mode", [("dark", "night"), ("light", "dem"), (None, "dem")])
+def test_mode_defaults_from_theme(monkeypatch, theme, mode):
+    monkeypatch.setattr(ungaged_ui, "_theme_type", lambda: theme)
+    assert ungaged_ui.default_mode() == mode

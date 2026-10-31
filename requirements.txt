@@ -1,4 +1,5 @@
-streamlit>=1.29.0
+# >=1.40: st.segmented_control (the map style selector).
+streamlit>=1.40.0
 
 # The analysis library, pinned to a tag. A change in flowfreq cannot reach this
 # app until this line is bumped, which is the point of pinning rather than
