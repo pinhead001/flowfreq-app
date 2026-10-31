@@ -1,9 +1,10 @@
-streamlit>=1.29.0
+# >=1.40: st.segmented_control (the map style selector).
+streamlit>=1.40.0
 
 # The analysis library, pinned to a tag. A change in flowfreq cannot reach this
 # app until this line is bumped, which is the point of pinning rather than
 # tracking main.
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.17.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.18.0
 
 # Declared because streamlit_app.py imports all five directly. A direct import
 # should not rely on a transitive dependency, even though flowfreq pulls them in.

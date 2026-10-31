@@ -1,6 +1,9 @@
 """The ungaged-site page: regional-regression flood quantiles at a point.
 
-The page collects a latitude, longitude and jurisdiction, calls
+A map (:mod:`map_component`) sits above the inputs: a left click fills the latitude,
+longitude and jurisdiction; the right-click menu's *Delineate* and *Estimate* run at once;
+typed coordinates move the map's marker. The page collects a latitude, longitude and
+jurisdiction, calls
 :func:`flowfreq.estimate_at_site` (StreamStats delineation plus the offline equation
 library) and shows the estimate with its provenance. All computation is the library's;
 this module formats outcomes and routes the user through the one interactive case, an
@@ -13,8 +16,13 @@ without a Streamlit runtime; :func:`render` is the page.
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+import numbers
+import threading
+from collections import OrderedDict
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 import requests
@@ -23,9 +31,16 @@ from flowfreq import OverlappingRegionsError, estimate_at_site
 from flowfreq.regression import JURISDICTIONS, available_states, nss_snapshot_states
 from flowfreq.regression.equations import OutOfRangeError
 from flowfreq.regression.library import EquationsUnavailable
+from flowfreq.streamstats import delineate_and_get_characteristics
 from flowfreq.ungaged import SiteEstimate
 
+from map_component import MODES, basin_map
+from map_geo import state_at, states_touching
+
 logger = logging.getLogger(__name__)
+
+MODE_LABELS = {"dem": "DEM", "night": "Night", "green": "Green"}
+MAP_ACTIONS = ("point", "delineate", "estimate")
 
 BADGE_VERIFIED = "verified"
 BADGE_PARTIAL = "partial"
@@ -36,6 +51,8 @@ BADGE_NONE = "none: NSS serves no peak-flow regions"
 AEP_CHOICES = (0.5, 0.2, 0.1, 0.04, 0.02, 0.01, 0.005, 0.002)
 
 RESULT_KEY = "ungaged_result"
+#: An estimate a callback asked for (the "Re-run with" buttons); run once inputs are read.
+PENDING_KEY = "ungaged_pending"
 
 
 def coverage_badge(code: str) -> str:
@@ -62,6 +79,51 @@ def coverage_badge(code: str) -> str:
     if code in nss_snapshot_states():
         return BADGE_SNAPSHOT
     return BADGE_NONE
+
+
+class BasinCache:
+    """A bounded, in-memory StreamStats result cache, safe across Streamlit threads.
+
+    Stands in for :class:`flowfreq.streamstats.StreamStatsCache`, whose ``get``/``set``
+    are all the library calls. That class writes one ever-growing JSON file under the
+    user's home and rewrites it on every set, which a shared server should not do; this
+    keeps the most recent ``maxsize`` results in memory and forgets the oldest.
+
+    Parameters
+    ----------
+    maxsize : int
+        Results kept. Each holds a basin polygon, tens to hundreds of KB.
+    """
+
+    def __init__(self, maxsize: int = 64) -> None:
+        self._maxsize = maxsize
+        self._data: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            value = self._data.get(key)
+            if value is not None:
+                self._data.move_to_end(key)
+            return value
+
+    def set(self, key: str, value: Dict[str, Any]) -> None:
+        with self._lock:
+            self._data[key] = value
+            self._data.move_to_end(key)
+            while len(self._data) > self._maxsize:
+                self._data.popitem(last=False)
+
+
+@st.cache_resource
+def _streamstats_cache() -> BasinCache:
+    """One StreamStats cache for the process, shared by Delineate and Estimate.
+
+    The library caches only when handed a cache. Sharing one, and asking both calls for
+    the same characteristics, means Estimate after Delineate at the same point reuses the
+    delineation instead of repeating a 10-30 s StreamStats round trip.
+    """
+    return BasinCache()
 
 
 def run_estimate(
@@ -108,6 +170,7 @@ def run_estimate(
             allow_nss_snapshot=allow_nss_snapshot,
             allow_extrapolation=allow_extrapolation,
             region=region,
+            cache=_streamstats_cache(),
         )
     except OverlappingRegionsError as exc:
         return {"error": str(exc), "kind": "overlap", "candidates": list(exc.candidates)}
@@ -128,6 +191,133 @@ def run_estimate(
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
     return {"estimate": estimate}
+
+
+def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
+    """Delineate the basin at a point, without equations. Never raises.
+
+    The map's *Delineate* action. Asks StreamStats for the same characteristics as
+    :func:`run_estimate` through the same cache (:func:`_streamstats_cache`), so an
+    *Estimate* at the same point afterwards does not delineate again.
+
+    Parameters
+    ----------
+    lat, lon : float
+        The pour point, decimal degrees.
+    state : str
+        StreamStats region (jurisdiction code).
+
+    Returns
+    -------
+    dict
+        ``{"basin": Feature, "snap": (lat, lon), "area_sq_mi": float}``, or
+        ``{"error": str, "kind": str}`` with ``kind`` one of ``input`` (including an
+        unsnappable point, a degenerate delineation and a region StreamStats does not
+        serve), ``network`` or ``unexpected``.
+    """
+    try:
+        ws = delineate_and_get_characteristics(state, lat, lon, cache=_streamstats_cache())
+    except ValueError as exc:  # unsnappable, degenerate, unsupported region, bad input
+        return {"error": str(exc), "kind": "input"}
+    except requests.RequestException as exc:
+        return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
+    except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
+        logger.exception("delineation failed")
+        return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    if ws.polygon_geojson is None:
+        return {"error": "StreamStats returned no watershed polygon here.", "kind": "input"}
+    area = ws.polygon_area_sq_mi
+    if area is None and "DRNAREA" in ws:
+        area = ws["DRNAREA"].value
+    return {
+        "basin": ws.polygon_geojson,
+        "snap": (ws.snap.snapped_lat, ws.snap.snapped_lon),
+        "area_sq_mi": area,
+    }
+
+
+def _theme_type() -> Optional[str]:
+    """``"dark"`` or ``"light"`` as the browser shows the app, else the configured base."""
+    theme = getattr(getattr(st, "context", None), "theme", None)
+    detected = getattr(theme, "type", None)
+    return detected or st.get_option("theme.base")
+
+
+def default_mode() -> str:
+    """The map style to open with: Night under a dark theme, else the grey DEM."""
+    return "night" if _theme_type() == "dark" else "dem"
+
+
+@lru_cache(maxsize=1)
+def _coverage() -> Dict[str, str]:
+    """Every jurisdiction's coverage badge, for the map's tint. Fixed for the process."""
+    return {j.code: coverage_badge(j.code) for j in JURISDICTIONS}
+
+
+def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
+    """Apply a new map event to the input widgets' session state.
+
+    Must run before the input widgets are created. Writes ``ungaged_lat`` and
+    ``ungaged_lon``, and ``ungaged_state`` when the point lies in one of ``codes``; a
+    point in the ocean or outside them leaves the jurisdiction as it was.
+
+    Parameters
+    ----------
+    event : any
+        The component's value (see :mod:`map_component`), or ``None``.
+    codes : sequence of str
+        The jurisdiction selectbox's options.
+
+    Returns
+    -------
+    str or None
+        The action applied, or ``None`` when there was no new, well-formed event.
+    """
+    if event is None:
+        # A map that has not sent anything: a fresh iframe (after a page switch, say),
+        # whose counter restarts, so forget the last nonce rather than collide with it.
+        st.session_state.pop("map_event_nonce", None)
+        return None
+    ok = (
+        isinstance(event, dict)
+        and event.get("action") in MAP_ACTIONS
+        and all(
+            isinstance(event.get(k), numbers.Real) and not isinstance(event.get(k), bool)
+            for k in ("lat", "lon", "nonce")
+        )
+    )
+    if not ok:
+        logger.warning("ignored malformed map event: %r", event)
+        return None
+    if event["nonce"] == st.session_state.get("map_event_nonce"):
+        return None  # the component keeps returning its last value; already applied
+    st.session_state["map_event_nonce"] = event["nonce"]
+    # A click on a repeated world copy arrives outside +-180; bring it back.
+    lon = (float(event["lon"]) + 180.0) % 360.0 - 180.0
+    lat, lon = round(float(event["lat"]), 6), round(lon, 6)
+    st.session_state["ungaged_lat"] = lat
+    st.session_state["ungaged_lon"] = lon
+    code = state_at(lat, lon)
+    if code in codes:
+        st.session_state["ungaged_state"] = code
+    return event["action"]
+
+
+def _basin_payload(
+    result: Optional[Dict[str, Any]],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[float, float]]]:
+    """The basin polygon and snapped pour point a stored result carries, if any."""
+    outcome = (result or {}).get("outcome") or {}
+    if "basin" in outcome:
+        return outcome["basin"], outcome.get("snap")
+    estimate = outcome.get("estimate")
+    if estimate is None or estimate.basin_geojson is None:
+        return None, None
+    basin = estimate.basin_geojson
+    snapped = (estimate.provenance or {}).get("snap") or {}
+    if "snapped_lat" in snapped and "snapped_lon" in snapped:
+        return basin, (snapped["snapped_lat"], snapped["snapped_lon"])
+    return basin, None
 
 
 def _state_label(code: str) -> str:
@@ -208,6 +398,43 @@ def _show_estimate(estimate: SiteEstimate) -> None:
         file_name=f"ungaged_{estimate.state}_{estimate.lat:.4f}_{estimate.lon:.4f}.md",
         mime="text/markdown",
     )
+    basin = estimate.basin_geojson
+    if basin is not None:
+        _basin_download(basin, estimate.state, estimate.lat, estimate.lon)
+        _offer_other_states(basin, estimate.state)
+
+
+def basin_download_name(state: str, lat: float, lon: float) -> str:
+    """File name for a basin's GeoJSON download."""
+    return f"ungaged_{state}_{lat:.4f}_{lon:.4f}.geojson"
+
+
+def _basin_download(basin: Dict[str, Any], state: str, lat: float, lon: float) -> None:
+    st.download_button(
+        "Download basin (GeoJSON)",
+        data=json.dumps(basin),
+        file_name=basin_download_name(state, lat, lon),
+        mime="application/geo+json",
+    )
+
+
+def _rerun_in(code: str) -> None:
+    # A callback runs before the script, so it may set the jurisdiction widget's key.
+    st.session_state["ungaged_state"] = code
+    st.session_state[PENDING_KEY] = "estimate"
+
+
+def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
+    codes = {j.code for j in JURISDICTIONS}
+    others = [c for c in states_touching(basin) if c != used and c in codes]
+    if not others:
+        return
+    st.info(
+        f"This basin also lies in {', '.join(others)}. Each state's equations are its own "
+        "report; re-run to see another's."
+    )
+    for col, code in zip(st.columns(len(others)), others):
+        col.button(f"Re-run with {code}", on_click=_rerun_in, args=(code,), key=f"rerun_{code}")
 
 
 def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
@@ -224,6 +451,12 @@ def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
     st.session_state[RESULT_KEY] = {"inputs": inputs, "outcome": outcome, "region": region}
 
 
+def _store_basin(inputs: Dict[str, Any]) -> None:
+    with st.spinner("Delineating the basin with StreamStats..."):
+        outcome = run_delineation(inputs["lat"], inputs["lon"], inputs["state"])
+    st.session_state[RESULT_KEY] = {"inputs": inputs, "outcome": outcome}
+
+
 def render() -> None:
     """Draw the ungaged-site page."""
     st.header("Ungaged site: regional regression")
@@ -233,14 +466,48 @@ def render() -> None:
         "the flowfreq library."
     )
     codes = [j.code for j in JURISDICTIONS]
+    st.session_state.setdefault("ungaged_lat", None)
+    st.session_state.setdefault("ungaged_lon", None)
+    st.session_state.setdefault("map_mode", default_mode())
+    st.session_state.setdefault("map_coverage", False)
+
+    # The map comes first and reads the widgets' state as of this run; its event is
+    # applied before the input widgets exist, so the write lands in this same run.
+    typed_lat, typed_lon = st.session_state["ungaged_lat"], st.session_state["ungaged_lon"]
+    basin, snap = _basin_payload(st.session_state.get(RESULT_KEY))
+    event = basin_map(
+        point=None if typed_lat is None or typed_lon is None else (typed_lat, typed_lon),
+        basin=basin,
+        snap=snap,
+        mode=st.session_state["map_mode"] or default_mode(),
+        overlays=frozenset({"coverage"}) if st.session_state["map_coverage"] else frozenset(),
+        coverage=_coverage(),
+    )
+    action = handle_map_event(event, codes)
+    col_mode, col_cov = st.columns([3, 2])
+    col_mode.segmented_control(
+        "Map", MODES, format_func=MODE_LABELS.get, key="map_mode", label_visibility="collapsed"
+    )
+    col_cov.toggle(
+        "Equation coverage",
+        key="map_coverage",
+        help="Tint jurisdictions by their regression library: verified, partial, NSS snapshot.",
+    )
+    st.caption(
+        "Click a stream to fill the coordinates, then Estimate. Right-click for Delineate, "
+        "Estimate, Copy and Zoom. From zoom 13 the StreamStats grid shows which cells snap."
+    )
+
     col_lat, col_lon, col_state = st.columns(3)
     lat = col_lat.number_input(
-        "Latitude", value=None, min_value=-90.0, max_value=90.0, format="%.6f"
+        "Latitude", min_value=-90.0, max_value=90.0, format="%.6f", key="ungaged_lat"
     )
     lon = col_lon.number_input(
-        "Longitude", value=None, min_value=-180.0, max_value=180.0, format="%.6f"
+        "Longitude", min_value=-180.0, max_value=180.0, format="%.6f", key="ungaged_lon"
     )
-    state = col_state.selectbox("Jurisdiction", codes, format_func=_state_label)
+    state = col_state.selectbox(
+        "Jurisdiction", codes, format_func=_state_label, key="ungaged_state"
+    )
     aeps: List[float] = st.multiselect(
         "AEPs (none selected: every AEP the regions publish)",
         AEP_CHOICES,
@@ -272,6 +539,17 @@ def render() -> None:
         # The widgets moved on: the result (and any overlap choice) belongs to old inputs.
         del st.session_state[RESULT_KEY]
         st.session_state.pop("ungaged_candidate", None)
+        if action == "point":
+            st.rerun()  # the map was drawn with the old basin; redraw it without
+
+    if st.session_state.pop(PENDING_KEY, None) == "estimate":
+        action = "estimate"
+    if action == "delineate":
+        _store_basin(current)
+        st.rerun()  # so the map receives the basin
+    if action == "estimate":
+        _store(current)
+        st.rerun()
 
     if st.button("Estimate", type="primary"):
         if lat is None or lon is None:
@@ -280,6 +558,7 @@ def render() -> None:
             }
         else:
             _store(current)
+            st.rerun()  # so the map, drawn above, receives the basin
 
     result = st.session_state.get(RESULT_KEY)
     if not result:
@@ -289,6 +568,12 @@ def render() -> None:
 
     if "estimate" in outcome:
         _show_estimate(outcome["estimate"])
+    elif "basin" in outcome:
+        area = outcome.get("area_sq_mi")
+        size = f"{area:,.1f} sq mi" if area is not None else "area unknown"
+        st.caption(f"Basin delineated: {size}. Press Estimate for quantiles.")
+        if inputs is not None:
+            _basin_download(outcome["basin"], inputs["state"], inputs["lat"], inputs["lon"])
     elif outcome.get("kind") == "overlap" and inputs is not None:
         st.info(
             "NSS serves more than one equation set for this area (superseded and current "
