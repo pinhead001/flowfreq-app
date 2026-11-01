@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show), coloured by qualification code; **Open in Bulletin 17C (Gaged page)**, which opens the Gaged page in a new window and runs the download and Bulletin 17C there on arrival (`?page=gaged&site=&run=1`, once per session), leaving the gage page open; links to the USGS pages; CSV downloads of the daily values (with their approval codes) and the annual peaks. Site, daily values and peaks download in parallel (1.2 s instead of 5.0 s for 12340500, cold).
 - **Daily mean flow chart** of the whole daily record: drag across the strip under it to zoom to a period of interest, drag the shaded box to move along the record, double-click to reset, or pick a quick period (whole record, last 10 years, last water year). Hovering reads out the day, its flow and its status (provisional, estimated, ice); provisional days are drawn in orange; annual peaks are red dots; dashed lines mark water years when under 15 years are in view; the flow axis fits the period in view. Log or linear from a switch inside the chart, so a zoomed period survives it. Missing days show as gaps. Lookups are cached for six hours and never raise: a failed or unknown site is reported on the page.
 
-### Basin map on the Ungaged-site page, flowfreq v0.18.0
+### Basin map on the Ungaged-site page
 
-The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
-`SiteEstimate.basin_geojson`. The Streamlit floor rises to 1.40.
+Draws the delineated watershed from `SiteEstimate.basin_geojson` (flowfreq v0.18.0). The
+Streamlit floor rises to 1.40 (`st.segmented_control`).
 
 - **Map above the inputs**, opening on CONUS with jump buttons to Alaska, Hawaii and the
   territories (PR/USVI, Guam/CNMI, American Samoa). Three styles: **DEM** (pixelated,
@@ -38,6 +38,25 @@ The pin moves from v0.17.0 to v0.18.0, which carries the delineated watershed on
   **GeoJSON download**. A basin crossing into another served jurisdiction offers
   "Re-run with XX".
 - `?page=ungaged` and `?page=gage&site=NNNNNNNN` open those pages directly.
+
+### flowfreq v0.19.0
+
+The pin moves from v0.18.0 to v0.19.0. Existing calls are unchanged. What it adds for the app:
+- `flowfreq.streamstats.delineate_watershed`: the watershed polygon without the ss-hydro
+  basin-characteristics request, for the basin map's Delineate action. It still works when
+  ss-hydro alone is down (it returned 502 all night on 2026-10-31).
+- Library-only additions the app does not call yet: `flowfreq.stationarity`,
+  `flowfreq.naturalize`, monthly and duration transfer variance, and a more robust GLS fit.
+
+### flowfreq v0.18.0
+
+The pin moves from v0.17.0 to v0.18.0. Existing calls are unchanged. What it adds for the app:
+- `SiteEstimate.basin_geojson`, the delineated watershed polygon, which the basin map needs.
+- Ungaged estimates in Wyoming region 1 (outlet longitude taken from the pour point) and in
+  Minnesota's Rainy River Basin (GC1775).
+- Regional skew by hydrologic unit in NY, PA, VA, WV, MA, LA, KY, TN and Alaska. In Alaska,
+  `regional_skew_for_site` now refuses a gage outside its skew area's drainage-area range
+  ("use station skew").
 
 ### flowfreq v0.17.0
 
