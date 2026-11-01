@@ -6,9 +6,12 @@
 <!--
   The basin map: MapLibre GL JS plus the Streamlit component protocol, by hand.
   No build step. Python side: map_component/__init__.py (args and value contract).
+  vendor/ holds MapLibre 5.6.0 as published on npm (the integrity hashes below are the
+  published files'); fonts/ holds the Noto Sans Italic glyph ranges the labels use, from
+  MapLibre's demo tile server. To upgrade, replace both files and their hashes together.
 -->
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
-<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
+<link rel="stylesheet" href="vendor/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
+<script src="vendor/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: transparent;
     font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -168,6 +171,9 @@ function exportTiles(service, ids) {
           "&transparent=true&format=png32&f=image"];
 }
 const WATER_FONT = ["Noto Sans Italic"];
+// The component's own folder, for files served next to this page: MapLibre wants an
+// absolute glyphs URL, and new URL() would escape its {fontstack}/{range} placeholders.
+const HERE = location.href.replace(/[?#].*$/, "").replace(/[^/]*$/, "");
 const DETAIL_ZOOM = 5.5;  // when water_detail.geojson is fetched
 const GAGE_MINZOOM = 8;
 const GAGE_MAX_RECORDS = 10000;  // paging stops here; a z8 view in the East holds ~2000
@@ -312,7 +318,7 @@ function createMap(args) {
     touchPitch: false,
     style: {
       version: 8,
-      glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+      glyphs: HERE + "fonts/{fontstack}/{range}.pbf",
       sources: {
         // tileSize 1024 for 256-px images: MapLibre fetches two zoom levels coarser
         // and stretches each sample over 4x4 screen pixels.
@@ -902,11 +908,11 @@ function onRender(args) {
 }
 
 if (typeof maplibregl === "undefined") {
-  // The CDN was unreachable or the file failed its integrity check: say so rather than
+  // The bundled copy did not load or failed its integrity check: say so rather than
   // leave a blank frame. The inputs below the map still work.
   document.getElementById("map").innerHTML =
     "<p style=\"padding:2em;font:14px sans-serif\">The map library could not be loaded " +
-    "(unpkg.com unreachable). Enter coordinates below the map instead.</p>";
+    "(vendor/maplibre-gl.js did not load). Enter coordinates below the map instead.</p>";
   send("streamlit:componentReady", { apiVersion: 1 });
   send("streamlit:setFrameHeight", { height: 120 });
 } else {

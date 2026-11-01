@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Map library and label glyphs served by the app
+
+- MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
+
 ### Resizable period on the gage page; Flow Frequency page
 
 - **Gage page:** drag either end of the box on the strip under the daily chart to lengthen

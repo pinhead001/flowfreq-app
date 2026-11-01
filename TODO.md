@@ -45,8 +45,8 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
 - **Sidebar page radio** recreates itself when the query params clear (its `index` flips);
   give it a key and set it from `?page=` once. A prefilled `?page=gaged&site=` is lost on a
   sidebar round trip.
-- **Self-host MapLibre and the glyphs** next to `index.html` (the JS now carries an SRI hash
-  and a load-failure message; the glyphs still come from MapLibre's demo server).
+- **Self-host the Vega bundles** in `vega_component/` as `map_component/` now does for MapLibre
+  (vega, vega-lite, vega-embed still load from jsDelivr, pinned with SRI hashes).
 - **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the
   monitoring-location lookup). Library candidate: `USGSgage.peak_summary()`, which would also
   move `summarize_peaks`/`record_years` out of the app (CLAUDE.md: numbers belong in flowfreq).
