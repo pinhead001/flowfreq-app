@@ -2,8 +2,9 @@
 
 ``?page=gage&site=NNNNNNNN`` lands here. The page shows the site (name, drainage area,
 state, HUC, location), its periods of record for daily flow and annual peaks, the daily
-record (zoomable to a period of interest) and the annual peaks as charts, and the ways
-on: Bulletin 17C on the Gaged page (in a new window), the USGS pages, the basin map. All
+record (zoomable to a period of interest) and the annual peaks as charts, a stationarity
+screen of the peaks, and the ways on: Bulletin 17C on the Gaged page (in a new window),
+the USGS pages, the basin map. All
 data comes from the flowfreq library (:class:`flowfreq.usgs.USGSgage`);
 this module only formats it.
 
@@ -22,6 +23,7 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from flowfreq.stationarity import stationarity_screen
 from flowfreq.usgs import USGSgage
 from flowfreq.waterdata import download_daily
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -256,14 +258,17 @@ def _record_frame(info: Dict[str, Any], summary: Optional[Dict[str, Any]]) -> pd
     return pd.DataFrame(rows).set_index("Record")
 
 
-def peak_chart(peaks: pd.DataFrame) -> alt.Chart:
-    """Annual peaks as bars on a numeric water-year axis, so gaps in the record show."""
+def peak_chart(peaks: pd.DataFrame, change_year: Optional[int] = None) -> alt.Chart:
+    """Annual peaks as bars on a numeric water-year axis, so gaps in the record show.
+
+    A ``change_year`` (from :func:`change_year`) draws a dashed line there, labelled.
+    """
     data = peaks.dropna(subset=["peak_flow_cfs"]).assign(
         peak_date=lambda d: pd.to_datetime(d["peak_date"]).dt.strftime("%Y-%m-%d").fillna(""),
         qualification_code=lambda d: d["qualification_code"].astype("string").fillna(""),
     )
     data["kind"] = data["qualification_code"].map(peak_kind)
-    return (
+    bars = (
         alt.Chart(data)
         .mark_bar(size=3)
         .encode(
@@ -284,6 +289,14 @@ def peak_chart(peaks: pd.DataFrame) -> alt.Chart:
         )
         .properties(height=260)
     )
+    if change_year is None:
+        return bars
+    marker = alt.Chart(pd.DataFrame({"x": [0]}))
+    rule = marker.mark_rule(color="#444", strokeDash=[6, 4]).encode(x=alt.datum(change_year))
+    label = marker.mark_text(align="left", dx=4, y=8, baseline="top", color="#444").encode(
+        x=alt.datum(change_year), text=alt.value(f"Change point {change_year}")
+    )
+    return alt.layer(bars, rule, label)
 
 
 #: Quick periods for the daily chart (:func:`period_window`).
@@ -557,6 +570,83 @@ def peak_kind(codes: str) -> str:
     return "Other code"
 
 
+#: Significance level of the stationarity screen (the library's default, stated here
+#: because :func:`change_year` reads the change-point p-value against it).
+SCREEN_ALPHA = 0.05
+
+
+def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
+    """The library's stationarity screen of an annual peak record; never raises.
+
+    The same input ``run_ffa`` screens on the Gaged page: every peak with its
+    qualification codes (so a change point can be attributed), in log10 when every peak
+    is positive.
+
+    Parameters
+    ----------
+    peaks : pandas.DataFrame
+        :meth:`flowfreq.usgs.USGSgage.download_peak_flow` output.
+
+    Returns
+    -------
+    dict
+        :func:`flowfreq.stationarity.stationarity_screen`'s result, or ``{"error": msg}``
+        when the screen cannot run (fewer than ten peaks).
+    """
+    values = pd.Series(
+        peaks["peak_flow_cfs"].to_numpy(dtype=float),
+        index=peaks["water_year"].to_numpy(dtype=int),
+    )
+    finite = values.dropna()
+    codes = (
+        peaks["qualification_code"].astype("string").fillna("").tolist()
+        if "qualification_code" in peaks
+        else None
+    )
+    try:
+        return stationarity_screen(
+            values,
+            log=bool(len(finite)) and bool((finite > 0).all()),
+            alpha=SCREEN_ALPHA,
+            peak_codes=codes,
+        )
+    except ValueError as exc:
+        logger.info("stationarity screen not run for the gage page: %s", exc)
+        return {"error": str(exc)}
+
+
+def change_year(screen: Dict[str, Any]) -> Optional[int]:
+    """The water year of a significant change point in :func:`screen_peaks`'s result."""
+    pettitt = screen.get("pettitt") or {}
+    year, p_value = pettitt.get("year"), pettitt.get("p_value")
+    if year is None or p_value is None or p_value >= SCREEN_ALPHA:
+        return None
+    return int(year)
+
+
+def _stationarity_section(screen: Dict[str, Any]) -> None:
+    """The screen's flags under the peak chart, or why there are none."""
+    if "error" in screen:
+        st.caption(f"Stationarity screen not run: {screen['error']}.")
+        return
+    first, last = screen["years"]
+    span = f"{screen['n']} annual peaks, {first}\u2013{last}"
+    if not screen["flags"]:
+        st.caption(
+            f"Stationarity screen: no significant trend, change point or change in "
+            f"variability in the {span} ({SCREEN_ALPHA:.0%} level)."
+        )
+        return
+    st.warning(
+        f"**Stationarity screen** ({span}):\n\n"
+        + "\n".join(f"- {flag[0].upper()}{flag[1:]}" for flag in screen["flags"])
+    )
+    st.caption(
+        "Trend and change-point tests from flowfreq, for information: the screen does not "
+        "change the Bulletin 17C fit, which assumes a stationary record."
+    )
+
+
 def back_button() -> None:
     """The same-tab "Back to the map" control."""
     st.button("\u2190 Back to the map", on_click=_go, args=("ungaged",), key="back_to_map")
@@ -679,12 +769,14 @@ def render(site_no: str) -> None:
         st.warning(peaks["error"])
     else:
         st.subheader("Annual peak flows")
-        st.altair_chart(peak_chart(peaks["peaks"]))
+        screen = screen_peaks(peaks["peaks"])
+        st.altair_chart(peak_chart(peaks["peaks"], change_year=change_year(screen)))
         st.caption(
             "Bars are the annual peaks as USGS reports them, coloured by qualification code. "
             "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Gaged "
             "page."
         )
+        _stationarity_section(screen)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
