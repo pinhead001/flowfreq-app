@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Delineate without ss-hydro
+
+The map's *Delineate* uses `flowfreq.streamstats.delineate_watershed`: the polygon from
+StreamStats' delineation service, without the ss-hydro basin-characteristics request. It is
+one round trip shorter and keeps working when ss-hydro alone is down (it returned HTTP 502
+for a day from 2026-10-30; Delineate at the Methow near Pateros still drew the 1,792 sq mi
+basin). An *Estimate* after a *Delineate* at the same point now delineates again, since it
+needs the characteristics. The "state StreamStats does not delineate" warning names the
+state plainly.
+
 ### Plain messages for StreamStats refusals (flowfreq v0.20.0)
 
 Estimate and Delineate show a warning that says what to do, instead of the library's error,

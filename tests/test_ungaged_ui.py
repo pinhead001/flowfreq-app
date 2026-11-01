@@ -160,23 +160,29 @@ def _watershed(polygon=BASIN, area=142.3) -> WatershedCharacteristics:
 
 def test_run_delineation_success(monkeypatch):
     ws = _watershed()
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: ws)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", lambda *a, **k: ws)
     out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert out == {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
 
 
-def test_run_delineation_asks_like_the_estimate(monkeypatch):
+def test_run_delineation_asks_for_the_polygon_only(monkeypatch):
     seen = {}
 
     def fake(*args, **kw):
         seen.update(args=args, **kw)
         return _watershed()
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake)
-    ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    def no_characteristics(*a, **k):
+        raise AssertionError("Delineate must not ask ss-hydro for characteristics")
+
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", fake)
+    monkeypatch.setattr(
+        "flowfreq.streamstats.delineate_and_get_characteristics", no_characteristics
+    )
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert seen["args"] == ("MT", 46.93, -113.97)
-    # estimate_at_site asks for every characteristic; the same request shares its cache key.
-    assert seen.get("characteristic_codes") is None
+    assert seen["cache"] is not None
+    assert out["area_sq_mi"] == pytest.approx(142.3)
 
 
 def test_estimate_and_delineation_share_one_streamstats_cache(monkeypatch):
@@ -190,7 +196,7 @@ def test_estimate_and_delineation_share_one_streamstats_cache(monkeypatch):
         caches["estimate"] = kw.get("cache")
         return _estimate()
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", fake_delineate)
     monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
     ungaged_ui.run_delineation(46.93, -113.97, "MT")
     ungaged_ui.run_estimate(46.93, -113.97, "MT", [], False)
@@ -199,9 +205,7 @@ def test_estimate_and_delineation_share_one_streamstats_cache(monkeypatch):
 
 
 def test_run_delineation_without_a_polygon_is_an_input_error(monkeypatch):
-    monkeypatch.setattr(
-        ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: _watershed(polygon=None)
-    )
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", lambda *a, **k: _watershed(polygon=None))
     out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert out["kind"] == "input" and "polygon" in out["error"]
 
@@ -221,7 +225,7 @@ def test_run_delineation_never_raises(monkeypatch, exc, kind):
     def boom(*a, **k):
         raise exc
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", boom)
     out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert out["kind"] == kind
     # A refusal reads plainly and keeps the library's message as its detail.
@@ -398,7 +402,7 @@ def recorders(monkeypatch):
         return _watershed()
 
     monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", fake_delineate)
     return calls
 
 
@@ -795,7 +799,7 @@ def test_a_failure_shows_once_just_below_the_map(monkeypatch, recorders):
     def degenerate(*a, **k):
         raise DegenerateDelineationError("degenerate watershed polygon")
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", degenerate)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", degenerate)
     at, _ = _with_map(monkeypatch, _event("delineate"))
     errors = [e.value for e in at.error if "degenerate" in e.value]
     assert len(errors) == 1
@@ -805,7 +809,7 @@ def test_a_refusal_shows_once_as_a_warning(monkeypatch, recorders):
     def unsnappable(*a, **k):
         raise UnsnappablePointError("could not snap to a stream")
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", unsnappable)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", unsnappable)
     at, _ = _with_map(monkeypatch, _event("delineate"))
     warnings = [w.value for w in at.warning if "stream network" in w.value]
     assert len(warnings) == 1
@@ -867,7 +871,7 @@ def test_delineation_refusals_read_plainly(monkeypatch, exc, kind, text):
     def boom(*a, **k):
         raise exc
 
-    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
+    monkeypatch.setattr(ungaged_ui, "delineate_watershed", boom)
     out = ungaged_ui.run_delineation(44.4, -85.7, "MI")
     assert out["kind"] == kind
     assert text in out["error"]
@@ -877,6 +881,7 @@ def test_unsupported_region_names_the_state():
     exc = RegionNotDelineatedError("no stream grid for region 'NE'")
     out = ungaged_ui.streamstats_refusal(exc, "NE")
     assert "Nebraska" in out["error"]
+    assert "StreamStats does not delineate basins in Nebraska:" in out["error"]
 
 
 def test_other_value_errors_stay_input_errors():
