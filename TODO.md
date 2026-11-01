@@ -62,7 +62,7 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
   seen end to end (the component draws an injected polygon correctly; the page shows the
   outage as an error). Re-run the two unchecked items in `docs/map_manual_checks.md`.
-- **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window. Stationarity flags under the peak chart (v0.20.0). The screen with the Flow Frequency page's Bulletin 17C results. Not yet: the library's one-page `stationarity_report`, and NID/NLCD basin events for attribution (need the delineated basin).
+- **Gage page, next.** Raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window. Stationarity flags under the peak chart (v0.20.0). The screen with the Flow Frequency page's Bulletin 17C results. Summary hydrograph, flow-duration curve and the `stationarity_report` downloads (2026-11-01). Not yet: NID/NLCD basin events for attribution (need the delineated basin).
 - **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
   in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,
   provisional days in orange, parallel loading, `run=1` auto-run on the Flow Frequency page).
