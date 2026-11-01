@@ -50,7 +50,6 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
 - **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the
   monitoring-location lookup). Library candidate: `USGSgage.peak_summary()`, which would also
   move `summarize_peaks`/`record_years` out of the app (CLAUDE.md: numbers belong in flowfreq).
-- **Network errors** quote the service URL in full; fine for engineers, long on screen.
 
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 

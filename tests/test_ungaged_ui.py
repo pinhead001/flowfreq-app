@@ -886,3 +886,57 @@ def test_unsupported_region_names_the_state():
 
 def test_other_value_errors_stay_input_errors():
     assert ungaged_ui.streamstats_refusal(ValueError("bad coordinate"), "TN") is None
+
+
+_LONG_URL = (
+    "https://streamstats.usgs.gov/ss-hydro/v1/basin-characteristics/calculate?"
+    "workspaceID=MT20261031123456789&rcode=MT&includeparameters=true"
+)
+
+
+def _http_error(status, reason, url=_LONG_URL):
+    response = requests.Response()
+    response.status_code, response.reason, response.url = status, reason, url
+    return requests.HTTPError(f"{status} Server Error: {reason} for url: {url}", response=response)
+
+
+@pytest.mark.parametrize(
+    "exc, message",
+    [
+        (_http_error(502, "Bad Gateway"), "502 Bad Gateway from streamstats.usgs.gov"),
+        (
+            requests.ConnectionError(
+                "HTTPSConnectionPool(host='api.waterdata.usgs.gov', port=443): Max retries "
+                "exceeded with url: /ogcapi/v0/collections/daily/items?monitoring_location_id="
+                "USGS-12340500 (Caused by NewConnectionError('Failed to establish a new "
+                "connection: [Errno 11001] getaddrinfo failed'))"
+            ),
+            "could not connect to api.waterdata.usgs.gov",
+        ),
+        (
+            requests.Timeout(request=requests.Request("GET", _LONG_URL).prepare()),
+            "timed out reaching streamstats.usgs.gov",
+        ),
+        (requests.ConnectionError("StreamStats down"), "could not connect (StreamStats down)"),
+    ],
+)
+def test_network_message_names_the_service_not_the_url(exc, message):
+    assert ungaged_ui.network_message(exc) == message
+
+
+def test_network_message_keeps_the_full_text_in_the_log(caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        ungaged_ui.network_message(_http_error(502, "Bad Gateway"))
+    assert "workspaceID=MT20261031123456789" in caplog.text
+
+
+def test_run_estimate_network_error_is_short(monkeypatch):
+    def boom(*a, **k):
+        raise _http_error(502, "Bad Gateway")
+
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", boom)
+    out = ungaged_ui.run_estimate(36.3, -87.0, "TN", [], False)
+    assert out == {
+        "error": "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov",
+        "kind": "network",
+    }

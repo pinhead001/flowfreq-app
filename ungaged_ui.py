@@ -24,6 +24,7 @@ import threading
 from collections import OrderedDict
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 import pandas as pd
 import requests
@@ -66,6 +67,45 @@ RESULT_KEY = "ungaged_result"
 PENDING_KEY = "ungaged_pending"
 #: The jurisdictions a queued comparison covers (the "Compare" button).
 COMPARE_KEY = "ungaged_compare"
+
+
+_HOST_IN_TEXT = re.compile(r"host='([^']+)'")
+
+
+def network_message(exc: requests.RequestException) -> str:
+    """A one-line description of a failed web request: the service, not its URL.
+
+    ``requests`` puts the whole URL, query string and all, in its messages; that full
+    text goes to the log, and the page gets the status and the host.
+
+    Parameters
+    ----------
+    exc : requests.RequestException
+
+    Returns
+    -------
+    str
+        For example ``"502 Bad Gateway from streamstats.usgs.gov"`` or
+        ``"could not connect to api.waterdata.usgs.gov"``.
+    """
+    logger.warning("web request failed: %s", exc)
+    response = getattr(exc, "response", None)
+    request = getattr(exc, "request", None)
+    url = getattr(response, "url", None) or getattr(request, "url", None) or ""
+    host = urlsplit(url).hostname if url else None
+    if not host:
+        found = _HOST_IN_TEXT.search(str(exc))
+        host = found.group(1) if found else None
+    if response is not None and response.status_code:
+        status = f"{response.status_code} {response.reason or ''}".strip()
+        return f"{status} from {host}" if host else status
+    if isinstance(exc, requests.Timeout):
+        return f"timed out reaching {host}" if host else "timed out"
+    if isinstance(exc, requests.ConnectionError):
+        if host:
+            return f"could not connect to {host}"
+        return f"could not connect ({str(exc)[:120]})"
+    return f"{type(exc).__name__} from {host}" if host else str(exc)[:160]
 
 
 def coverage_badge(code: str) -> str:
@@ -256,7 +296,7 @@ def run_estimate(
     except (ValueError, LookupError) as exc:
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
-        return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
+        return {"error": f"StreamStats request failed: {network_message(exc)}", "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
@@ -294,7 +334,7 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
-        return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
+        return {"error": f"StreamStats request failed: {network_message(exc)}", "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("delineation failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
