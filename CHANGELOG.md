@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Gage page
+
+- **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show); **Run Bulletin 17C on this site**, which opens the Gaged page with the site filled in (`?page=gaged&site=`), in the same tab; links to the USGS pages. Lookups are cached for six hours and never raise: a failed or unknown site is reported on the page.
+
 ### Basin map on the Ungaged-site page
 
 Draws the delineated watershed from `SiteEstimate.basin_geojson` (flowfreq v0.18.0). The
@@ -17,8 +21,11 @@ Streamlit floor rises to 1.40 (`st.segmented_control`).
   banded grey shading, the early-USGS-DEM look), **Night** (city lights under blue-grey
   relief; the default under a dark theme) and **Green** (iridescent hillshade). The
   hillshade is computed in the browser from AWS Terrain Tiles.
-- Rivers and hydrologic units from USGS The National Map, more detail with zoom; state and
-  territory lines; an optional tint by equation coverage (verified / partial / snapshot).
+- Rivers, lakes and hydrologic units, more detail with zoom: Natural Earth rivers and lakes
+  (bundled, styled per mode) below zoom 10, USGS NHD streams from zoom 10, USGS WBD HUC2-HUC12
+  throughout, all without baked-in labels. Water bodies are labelled by the map itself with
+  their real names ("Gulf of Mexico"); `tools/build_hydro_geojson.py` holds the correction
+  list. State and territory lines; an optional tint by equation coverage (verified / partial / snapshot).
 - **StreamStats StreamGrid** from zoom 13: the cells that will snap and delineate, with a
   chip naming states that have no grid.
 - **Streamgages** from zoom 8 as hollow triangles; a popup links the gage page (a
