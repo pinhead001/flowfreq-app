@@ -7,9 +7,10 @@ Run with: streamlit run streamlit_app.py
 import io
 import logging
 import os
+import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -369,7 +370,44 @@ st.markdown(
 
 PAGE_GAGED = "Gaged site"
 PAGE_UNGAGED = "Ungaged site"
-page = st.sidebar.radio("Page", [PAGE_GAGED, PAGE_UNGAGED], horizontal=True)
+PAGE_GAGE = "Gage"
+_PAGE_PARAMS = {"ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+
+
+def requested_page(params: Mapping[str, str]) -> Optional[str]:
+    """The page a ``?page=`` query parameter asks for, or ``None``.
+
+    The sidebar radio is the normal navigation; the parameter exists so a link -- the
+    basin map's gage popup -- can land on a page. ``gage`` takes ``&site=NNNNNNNN``.
+    """
+    return _PAGE_PARAMS.get(params.get("page", ""))
+
+
+requested = requested_page(st.query_params)
+if requested == PAGE_GAGE:
+    # Placeholder until the gage page exists (TODO.md, Spec 2). The site number comes from
+    # the URL, so it is checked before it reaches any markdown.
+    site = st.query_params.get("site", "")
+    st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
+    if not re.fullmatch(r"\d{8,15}", site):
+        st.error("That is not a valid USGS site number (8 to 15 digits).")
+    else:
+        st.header(f"Gage {site}")
+        st.info(
+            "The gage page is coming: period of record for daily and peak flows, "
+            "Bulletin 17C, hydrographs. Meanwhile, see "
+            f"https://waterdata.usgs.gov/monitoring-location/{site}/"
+        )
+    st.sidebar.markdown(f"**flowfreq** v{__version__}")
+    st.stop()
+
+page = st.sidebar.radio(
+    "Page",
+    [PAGE_GAGED, PAGE_UNGAGED],
+    index=1 if requested == PAGE_UNGAGED else 0,
+    horizontal=True,
+    on_change=st.query_params.clear,  # choosing a page by hand drops the link's parameter
+)
 
 if page == PAGE_UNGAGED:
     ungaged_ui.render()

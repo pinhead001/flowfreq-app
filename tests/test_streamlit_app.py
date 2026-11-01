@@ -458,3 +458,53 @@ class TestComparisonExportFiltersErrors:
         source = " ".join(_source(app_module).split())
         block = source.split("site_results_for_export = {}")[1].split("export_comparison_csv")[0]
         assert 'not st.session_state.ffa_results[ sno ].get("error")' in block
+
+
+@pytest.mark.parametrize(
+    "params, page",
+    [
+        ({"page": "ungaged"}, "Ungaged site"),
+        ({"page": "gage", "site": "12358500"}, "Gage"),
+        ({"page": "nope"}, None),
+        ({}, None),
+    ],
+)
+def test_requested_page(app_module, params, page):
+    assert app_module.requested_page(params) == page
+
+
+def _app_with(params):
+    from streamlit.testing.v1 import AppTest
+
+    path = pathlib.Path(__file__).resolve().parent.parent / "streamlit_app.py"
+    at = AppTest.from_file(str(path), default_timeout=60)
+    for key, value in params.items():
+        at.query_params[key] = value
+    return at.run()
+
+
+def test_gage_placeholder_names_the_site():
+    at = _app_with({"page": "gage", "site": "12358500"})
+    assert not at.exception
+    assert any("12358500" in h.value for h in at.header)
+    assert at.info  # the coming-soon line
+    assert not [h for h in at.header if "Ungaged" in h.value]
+
+
+def test_ungaged_param_opens_the_ungaged_page():
+    at = _app_with({"page": "ungaged"})
+    assert not at.exception
+    assert any("Ungaged site" in h.value for h in at.header)
+
+
+@pytest.mark.parametrize("site", ["<script>alert(1)</script>", "[x](https://evil.example)", "12"])
+def test_gage_placeholder_rejects_a_bad_site(site):
+    at = _app_with({"page": "gage", "site": site})
+    assert not at.exception
+    assert not any(site in h.value for h in at.header)
+    assert any("not a valid" in e.value for e in at.error)
+
+
+def test_gage_placeholder_links_back_to_the_map():
+    at = _app_with({"page": "gage", "site": "12358500"})
+    assert any("?page=ungaged" in m.value for m in at.markdown)

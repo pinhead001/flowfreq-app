@@ -19,7 +19,10 @@ here is the Streamlit UI and the display formatting that serves it.
 
 ```
 streamlit_app.py     the app; a top-level script, not a module with a main()
-ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate` (never raises), `coverage_badge`
+ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate`/`run_delineation` (never raise), `coverage_badge`
+map_component/       the basin map: build-less MapLibre component (`index.html`), `basin_map()`, bundled `states.geojson`
+map_geo.py           point-in-state and basin preparation for the map (pure Python, no GIS dependency)
+tools/               one-off generators, e.g. `build_states_geojson.py` (regenerates `map_component/states.geojson`)
 ffa_runner.py        display formatting: pandas frames of pre-formatted strings
 ffa_export.py        ZIP export (PNG, CSV, LP3 parameters)
 requirements.txt     runtime deps, including the pinned flowfreq tag

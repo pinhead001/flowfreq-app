@@ -18,6 +18,15 @@ pytest.importorskip("streamlit", reason="Streamlit not installed")
 from flowfreq import OverlappingRegionsError
 from flowfreq.regression.equations import OutOfRangeError
 from flowfreq.regression.library import EquationsUnavailable
+from flowfreq.streamstats import (
+    Characteristic,
+    DegenerateDelineationError,
+    Provenance,
+    SnapResult,
+    UnsnappablePointError,
+    UnsupportedRegionError,
+    WatershedCharacteristics,
+)
 from flowfreq.ungaged import QUANTILE_COLUMNS, SiteEstimate
 from streamlit.testing.v1 import AppTest
 
@@ -119,6 +128,102 @@ def test_run_estimate_overlap_carries_candidates(monkeypatch):
     assert out["kind"] == "overlap"
     assert out["candidates"] == CANDIDATES
     assert "GC2016" in out["error"]
+
+
+BASIN = {
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[-113.97, 46.93], [-114.0, 47.0], [-113.9, 47.05], [-113.97, 46.93]]],
+    },
+}
+
+
+def _watershed(polygon=BASIN, area=142.3) -> WatershedCharacteristics:
+    return WatershedCharacteristics(
+        region="MT",
+        snap=SnapResult(46.93, -113.97, 46.9312, -113.9688, True, 13.2),
+        polygon_geojson=polygon,
+        characteristics={"DRNAREA": Characteristic("DRNAREA", "Drainage area", "", area, "mi2")},
+        provenance=Provenance(
+            service_versions={},
+            request_urls=[],
+            requested_at_utc="2026-10-30T00:00:00+00:00",
+            server_used="test",
+        ),
+        polygon_area_sq_mi=area,
+    )
+
+
+def test_run_delineation_success(monkeypatch):
+    ws = _watershed()
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: ws)
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out == {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+
+
+def test_run_delineation_asks_like_the_estimate(monkeypatch):
+    seen = {}
+
+    def fake(*args, **kw):
+        seen.update(args=args, **kw)
+        return _watershed()
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake)
+    ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert seen["args"] == ("MT", 46.93, -113.97)
+    # estimate_at_site asks for every characteristic; the same request shares its cache key.
+    assert seen.get("characteristic_codes") is None
+
+
+def test_estimate_and_delineation_share_one_streamstats_cache(monkeypatch):
+    caches = {}
+
+    def fake_delineate(*args, **kw):
+        caches["delineate"] = kw.get("cache")
+        return _watershed()
+
+    def fake_estimate(lat, lon, **kw):
+        caches["estimate"] = kw.get("cache")
+        return _estimate()
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
+    ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    ungaged_ui.run_estimate(46.93, -113.97, "MT", [], False)
+    assert caches["delineate"] is not None
+    assert caches["delineate"] is caches["estimate"]
+
+
+def test_run_delineation_without_a_polygon_is_an_input_error(monkeypatch):
+    monkeypatch.setattr(
+        ungaged_ui, "delineate_and_get_characteristics", lambda *a, **k: _watershed(polygon=None)
+    )
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out["kind"] == "input" and "polygon" in out["error"]
+
+
+@pytest.mark.parametrize(
+    "exc, kind",
+    [
+        (UnsnappablePointError("no stream within reach of the point"), "input"),
+        (DegenerateDelineationError("degenerate watershed"), "input"),
+        (UnsupportedRegionError("FL has no StreamStats service"), "input"),
+        (ValueError("bad coordinate"), "input"),
+        (requests.ConnectionError("StreamStats down"), "network"),
+        (RuntimeError("boom"), "unexpected"),
+    ],
+)
+def test_run_delineation_never_raises(monkeypatch, exc, kind):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
+    out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
+    assert out["kind"] == kind
+    assert str(exc) in out["error"]
+    assert "basin" not in out
 
 
 def _page():
@@ -256,3 +361,351 @@ def test_chosen_set_caption():
 
 def test_no_caption_without_a_choice():
     assert ungaged_ui.chosen_set_caption(_estimate()) == ""
+
+
+# --- The map: events from the component fill the inputs ------------------------------
+
+
+class _MapStub:
+    """Stands in for ``basin_map``: returns a chosen event and records its kwargs."""
+
+    def __init__(self, event=None):
+        self.event = event
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.event
+
+
+def _event(action="point", lat=46.87, lon=-113.99, nonce=1):
+    return {"action": action, "lat": lat, "lon": lon, "zoom": 9.0, "nonce": nonce}
+
+
+@pytest.fixture
+def recorders(monkeypatch):
+    calls = {"estimate": [], "delineate": []}
+
+    def fake_estimate(lat, lon, **kw):
+        calls["estimate"].append((lat, lon, kw))
+        return _estimate()
+
+    def fake_delineate(state, lat, lon, **kw):
+        calls["delineate"].append((state, lat, lon))
+        return _watershed()
+
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", fake_estimate)
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", fake_delineate)
+    return calls
+
+
+def _with_map(monkeypatch, event):
+    stub = _MapStub(event)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30).run()
+    return at, stub
+
+
+def test_point_event_fills_inputs_and_runs_nothing(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("point"))
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] == 46.87
+    assert at.session_state["ungaged_lon"] == -113.99
+    assert at.session_state["ungaged_state"] == "MT"
+    assert at.number_input[0].value == 46.87
+    assert recorders == {"estimate": [], "delineate": []}
+
+
+def test_same_nonce_is_ignored_on_rerun(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("point"))
+    at.number_input[0].set_value(45.0)
+    at.run()
+    assert at.session_state["ungaged_lat"] == 45.0  # the old click did not come back
+
+
+def test_new_nonce_updates_the_inputs(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, _event("point"))
+    stub.event = _event("point", lat=44.5, lon=-110.0, nonce=2)
+    at.run()
+    assert at.session_state["ungaged_lat"] == 44.5
+    assert at.session_state["ungaged_state"] == "WY"
+
+
+def test_ocean_click_leaves_jurisdiction(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, _event("point"))  # MT
+    stub.event = _event("point", lat=27.0, lon=-89.0, nonce=2)  # Gulf of Mexico
+    at.run()
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] == 27.0
+    assert at.session_state["ungaged_state"] == "MT"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"action": "point"},
+        {"action": "point", "lat": "north", "lon": -110.0, "nonce": 1},
+        {"action": "teleport", "lat": 45.0, "lon": -110.0, "nonce": 1},
+        "not a dict",
+    ],
+)
+def test_malformed_event_is_ignored(monkeypatch, recorders, caplog, event):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, event)
+    assert not at.exception
+    assert at.session_state["ungaged_lat"] is None
+    assert any("map event" in r.getMessage() for r in caplog.records)
+
+
+def test_delineate_event_calls_delineation_only(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("delineate"))
+    assert not at.exception
+    assert recorders["delineate"] == [("MT", 46.87, -113.99)]
+    assert recorders["estimate"] == []
+
+
+def test_estimate_event_calls_estimate(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, _event("estimate"))
+    assert not at.exception
+    assert len(recorders["estimate"]) == 1
+    lat, lon, kw = recorders["estimate"][0]
+    assert (lat, lon, kw["state"]) == (46.87, -113.99, "MT")
+    assert at.dataframe  # the quantile table
+
+
+def test_typed_coordinates_reach_the_component(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, None)
+    assert stub.calls[-1]["point"] is None
+    at.number_input[0].set_value(44.5)
+    at.number_input[1].set_value(-110.0)
+    at.run()
+    assert stub.calls[-1]["point"] == (44.5, -110.0)
+
+
+def test_coverage_passed_for_every_jurisdiction(monkeypatch, recorders):
+    from flowfreq.regression import JURISDICTIONS
+
+    _, stub = _with_map(monkeypatch, None)
+    coverage = stub.calls[-1]["coverage"]
+    assert set(coverage) == {j.code for j in JURISDICTIONS}
+    assert coverage["DC"] == ungaged_ui.BADGE_NONE
+
+
+def test_coverage_toggle_switches_the_overlay(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, None)
+    assert stub.calls[-1]["overlays"] == frozenset()
+    at.toggle[0].set_value(True)
+    at.run()
+    assert stub.calls[-1]["overlays"] == frozenset({"coverage"})
+
+
+@pytest.mark.parametrize("theme, mode", [("dark", "night"), ("light", "dem"), (None, "dem")])
+def test_mode_defaults_from_theme(monkeypatch, theme, mode):
+    monkeypatch.setattr(ungaged_ui, "_theme_type", lambda: theme)
+    assert ungaged_ui.default_mode() == mode
+
+
+# --- Results on the map: basin, GeoJSON download, other states ------------------------
+
+TWO_STATE_BASIN = {
+    "type": "Feature",
+    "properties": {},
+    "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+            [[-108.1, 44.9], [-107.9, 44.9], [-107.9, 45.1], [-108.1, 45.1], [-108.1, 44.9]]
+        ],
+    },
+}
+MT_INPUTS = {
+    "lat": 45.05,
+    "lon": -108.0,
+    "state": "MT",
+    "aeps": [],
+    "snapshot": False,
+    "extrapolate": False,
+}
+
+
+def _estimate_with_basin(basin, state="MT"):
+    est = _estimate()
+    est.state = state
+    est.provenance = {"snap": {"snapped_lat": 45.051, "snapped_lon": -108.001}}
+    est.basin_geojson = basin  # SiteEstimate.basin_geojson, flowfreq >= 0.18
+    return est
+
+
+def _seeded_matching(monkeypatch, outcome, inputs=MT_INPUTS):
+    """Run with the widgets matching ``inputs`` and ``outcome`` stored."""
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["ungaged_lat"] = inputs["lat"]
+    at.session_state["ungaged_lon"] = inputs["lon"]
+    at.session_state["ungaged_state"] = inputs["state"]
+    at.session_state["ungaged_result"] = {"inputs": inputs, "outcome": outcome}
+    return at.run(), stub
+
+
+def _labels(at):
+    return [d.proto.label for d in at.get("download_button")]
+
+
+def test_estimate_basin_reaches_the_component_and_download(monkeypatch, recorders):
+    est = _estimate_with_basin(BASIN)
+    at, stub = _seeded_matching(monkeypatch, {"estimate": est})
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is BASIN
+    assert stub.calls[-1]["snap"] == (45.051, -108.001)
+    assert "Download basin (GeoJSON)" in _labels(at)
+
+
+def test_estimate_without_basin_shows_table_only(monkeypatch, recorders):
+    est = _estimate_with_basin(None)
+    at, stub = _seeded_matching(monkeypatch, {"estimate": est})
+    assert not at.exception
+    assert at.dataframe
+    assert stub.calls[-1]["basin"] is None
+    assert "Download basin (GeoJSON)" not in _labels(at)
+
+
+def test_delineation_result_shows_caption_and_download_no_table(monkeypatch, recorders):
+    outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+    at, stub = _seeded_matching(monkeypatch, outcome)
+    assert not at.exception
+    assert any("142.3 sq mi" in c.value and "Press Estimate" in c.value for c in at.caption)
+    assert not at.dataframe
+    assert "Download basin (GeoJSON)" in _labels(at)
+    assert stub.calls[-1]["basin"] is BASIN
+    assert stub.calls[-1]["snap"] == (46.9312, -113.9688)
+
+
+def test_other_states_offered_for_a_two_state_basin(monkeypatch, recorders):
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    assert not at.exception
+    assert any("also lies in WY" in i.value for i in at.info)
+    rerun = [b for b in at.button if b.label == "Re-run with WY"]
+    assert rerun
+    rerun[0].click()
+    at.run()
+    assert not at.exception
+    assert at.session_state["ungaged_state"] == "WY"
+    assert [kw["state"] for _, _, kw in recorders["estimate"]] == ["WY"]
+
+
+def test_no_other_states_for_a_one_state_basin(monkeypatch, recorders):
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(BASIN)})
+    assert not [b for b in at.button if b.label.startswith("Re-run with")]
+
+
+def test_basin_download_name():
+    name = ungaged_ui.basin_download_name("MT", 46.87, -113.99)
+    assert name == "ungaged_MT_46.8700_-113.9900.geojson"
+
+
+def test_estimate_button_hands_the_basin_to_the_map(monkeypatch):
+    est = _estimate_with_basin(BASIN)
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", lambda lat, lon, **kw: est)
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["ungaged_lat"] = 45.05
+    at.session_state["ungaged_lon"] = -108.0
+    at.session_state["ungaged_state"] = "MT"
+    at.run()
+    [b for b in at.button if b.label == "Estimate"][0].click()
+    at.run()
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is BASIN  # the rerun after Estimate reached the map
+
+
+# --- Review fixes -------------------------------------------------------------------
+
+
+def test_wrapped_longitude_is_normalised(monkeypatch, recorders):
+    # A click on the world copy west of the antimeridian: Attu reported as -186.8.
+    at, _ = _with_map(monkeypatch, _event("point", lat=52.9, lon=-186.8))
+    assert not at.exception
+    assert at.session_state["ungaged_lon"] == pytest.approx(173.2)
+    assert at.session_state["ungaged_state"] == "AK"
+
+
+def test_nonce_restarts_after_the_map_remounts(monkeypatch, recorders):
+    stub = _MapStub(None)
+    monkeypatch.setattr(ungaged_ui, "basin_map", stub)
+    at = AppTest.from_function(_page, default_timeout=30)
+    at.session_state["map_event_nonce"] = 1  # from before a page switch
+    at.run()  # the remounted map has no value yet
+    stub.event = _event("point", nonce=1)  # its counter restarted
+    at.run()
+    assert at.session_state["ungaged_lat"] == 46.87
+
+
+def test_point_event_clears_the_drawn_basin(monkeypatch, recorders):
+    outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
+    at, stub = _seeded_matching(monkeypatch, outcome)
+    assert stub.calls[-1]["basin"] is BASIN
+    stub.event = _event("point", lat=46.0, lon=-112.0, nonce=7)
+    at.run()
+    assert not at.exception
+    assert stub.calls[-1]["basin"] is None  # the map no longer shows the old basin
+
+
+def test_basin_cache_is_bounded_and_in_memory():
+    cache = ungaged_ui.BasinCache(maxsize=2)
+    cache.set("a", {"n": 1})
+    cache.set("b", {"n": 2})
+    assert cache.get("a") == {"n": 1}  # touching "a" makes "b" the oldest
+    cache.set("c", {"n": 3})
+    assert cache.get("b") is None
+    assert cache.get("a") == {"n": 1} and cache.get("c") == {"n": 3}
+
+
+def test_shared_cache_is_the_in_memory_one():
+    assert isinstance(ungaged_ui._streamstats_cache(), ungaged_ui.BasinCache)
+
+
+# --- Phase 1: map polish ---------------------------------------------------------------
+
+
+def test_mode_event_sets_the_mode_and_fills_nothing(monkeypatch, recorders):
+    at, stub = _with_map(monkeypatch, {"action": "mode", "mode": "green", "nonce": 5})
+    assert not at.exception
+    assert at.session_state["map_mode"] == "green"
+    assert at.session_state["ungaged_lat"] is None
+    at.run()
+    assert stub.calls[-1]["mode"] == "green"
+    assert recorders == {"estimate": [], "delineate": []}
+
+
+def test_unknown_mode_is_ignored(monkeypatch, recorders, caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, {"action": "mode", "mode": "sepia", "nonce": 5})
+    assert not at.exception
+    assert at.session_state["map_mode"] in ("dem", "night")
+    assert any("map event" in r.getMessage() for r in caplog.records)
+
+
+def test_no_style_selector_below_the_map(monkeypatch, recorders):
+    at, _ = _with_map(monkeypatch, None)
+    assert not at.get("button_group")  # the style buttons live on the map now
+
+
+def test_malformed_event_is_logged_once(monkeypatch, recorders, caplog):
+    with caplog.at_level(logging.WARNING, logger="ungaged_ui"):
+        at, _ = _with_map(monkeypatch, {"action": "point", "nonce": 3})
+        at.run()
+        at.run()
+    assert sum("map event" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_basin_extras_computed_once_per_basin(monkeypatch, recorders):
+    calls = []
+    real = ungaged_ui.states_touching
+    monkeypatch.setattr(ungaged_ui, "states_touching", lambda b: calls.append(1) or real(b))
+    ungaged_ui._BASIN_EXTRAS.clear()
+    at, _ = _seeded_matching(monkeypatch, {"estimate": _estimate_with_basin(TWO_STATE_BASIN)})
+    at.run()
+    at.run()
+    assert not at.exception
+    assert len(calls) == 1

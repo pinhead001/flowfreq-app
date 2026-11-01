@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>basin map</title>
+<!--
+  The basin map: MapLibre GL JS plus the Streamlit component protocol, by hand.
+  No build step. Python side: map_component/__init__.py (args and value contract).
+-->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent;
+    font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #map { position: absolute; inset: 0; border-radius: 6px; overflow: hidden; }
+
+  /* The pour-point orb: a solid core and an expanding ring. Colour from --orb. */
+  .orb { width: 14px; height: 14px; position: relative; pointer-events: none; }
+  .orb::before, .orb::after { content: ""; position: absolute; inset: 0; border-radius: 50%; }
+  .orb::before { background: var(--orb); box-shadow: 0 0 10px 2px var(--orb); }
+  .orb::after { border: 2px solid var(--orb); animation: pulse 1.6s ease-out infinite; }
+  @keyframes pulse { from { transform: scale(1); opacity: .85; } to { transform: scale(2.6); opacity: 0; } }
+
+  .chips { position: absolute; left: 10px; bottom: 38px; display: flex; flex-direction: column;
+    gap: 6px; align-items: flex-start; pointer-events: none; z-index: 2; }
+  .chip { padding: 4px 8px; border-radius: 4px; background: var(--chip-bg); color: var(--chip-fg);
+    border: 1px solid var(--chip-border); backdrop-filter: blur(3px); }
+  .chip[hidden] { display: none; }
+  .swatch { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 8px;
+    vertical-align: -1px; border-radius: 2px; }
+  .swatch:first-child { margin-left: 0; }
+  .jump { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; z-index: 2; }
+  .modes { position: absolute; right: 10px; top: 10px; display: flex; z-index: 2; }
+  .modes button { border-radius: 0; margin-left: -1px; }
+  .modes button:first-child { border-radius: 4px 0 0 4px; }
+  .modes button:last-child { border-radius: 0 4px 4px 0; }
+  .modes button.active { background: var(--chip-fg); color: var(--chip-bg); }
+  .jump button, .modes button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
+    background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
+  .jump button:hover, .modes button:hover, .menu button:hover { filter: brightness(1.25); }
+  .menu { position: absolute; z-index: 3; display: flex; flex-direction: column; min-width: 170px;
+    background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; }
+  .menu[hidden] { display: none; }
+  .menu .head { padding: 6px 10px; color: var(--chip-fg); opacity: .75; border-bottom: 1px solid var(--chip-border); }
+  .menu button { border: 0; border-radius: 0; text-align: left; padding: 7px 10px; }
+  .maplibregl-popup-content { font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
+  .maplibregl-popup-content a { color: var(--chip-fg); font-weight: bold; }
+  .maplibregl-popup-tip { display: none; }
+  .maplibregl-ctrl-attrib { background: var(--chip-bg) !important; color: var(--chip-fg) !important; }
+  .maplibregl-ctrl-attrib a { color: var(--chip-fg) !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="jump">
+  <button type="button" data-jump="conus">CONUS</button>
+  <button type="button" data-jump="alaska">Alaska</button>
+  <button type="button" data-jump="hawaii">Hawaii</button>
+  <button type="button" data-jump="territories" title="Cycles: PR/USVI, Guam/CNMI, American Samoa">Territories</button>
+</div>
+<div class="modes" title="Map style">
+  <button type="button" data-mode="dem">DEM</button>
+  <button type="button" data-mode="night">Night</button>
+  <button type="button" data-mode="green">Green</button>
+</div>
+<div class="menu" id="menu" hidden>
+  <div class="head" id="menu-head"></div>
+  <button type="button" data-act="delineate">Delineate (basin only)</button>
+  <button type="button" data-act="estimate">Estimate (basin + flows)</button>
+  <button type="button" data-act="copy">Copy lat/lon</button>
+  <button type="button" data-act="zoom">Zoom to point</button>
+</div>
+<div class="chips">
+  <div class="chip" id="chip-grid" hidden></div>
+  <div class="chip" id="chip-coverage" hidden>
+    <span class="swatch" style="background:#2e9e4f"></span>verified
+    <span class="swatch" style="background:#d6b11f"></span>partial
+    <span class="swatch" style="background:#e07b24"></span>snapshot
+    <span class="swatch" style="background:transparent;border:1px solid currentColor"></span>none
+  </div>
+</div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Streamlit component protocol
+// ---------------------------------------------------------------------------
+function send(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+function setValue(value) {
+  send("streamlit:setComponentValue", { value, dataType: "json" });
+}
+
+// ---------------------------------------------------------------------------
+// Modes. Every colour the map uses lives here; a fourth mode is one more entry.
+// ---------------------------------------------------------------------------
+const MODES = {
+  dem: {
+    chip: { bg: "rgba(255,255,255,0.85)", fg: "#222", border: "#999" },
+    background: "#d9d9d9",
+    shade: { kind: "grey", levels: 14, water: [207, 211, 214, 255] },
+    rivers: { brightnessMin: 0, brightnessMax: 1, saturation: 0, hueRotate: 0, opacity: 0.9 },
+    stateLine: { color: "#555555", opacity: 1 },
+    marker: "#d97706",
+    streamgrid: { hueRotate: 0, saturation: 0.2, brightnessMin: 0 },
+    gage: "#222222",
+    basin: "#b45309",
+  },
+  night: {
+    chip: { bg: "rgba(10,14,28,0.8)", fg: "#cfd8ff", border: "#3a4670" },
+    background: "#000000",
+    shade: { kind: "tint", shadow: [0, 0, 0], highlight: [120, 140, 190], flat: 0.28, gain: 1.6,
+             alpha: 170, levels: 0 },
+    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.35, hueRotate: 180, opacity: 0.9 },
+    stateLine: { color: "#99aaaa", opacity: 0.6 },
+    marker: "#39ff14",
+    streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
+    gage: "#ffd166",
+    basin: "#39ff14",
+  },
+  green: {
+    chip: { bg: "rgba(2,20,12,0.8)", fg: "#9dffc8", border: "#1f8f5f" },
+    background: "#06100c",
+    shade: { kind: "iridescent", shadow: [1, 6, 4], base: [8, 46, 30], highlight: [125, 255, 179],
+             accentA: [95, 216, 255], accentB: [182, 255, 106], flat: 0.3, gain: 1.7,
+             alpha: 255, levels: 0 },
+    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.1, hueRotate: 140, opacity: 0.85 },
+    stateLine: { color: "#55ffdd", opacity: 0.5 },
+    marker: "#39ff14",
+    streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
+    gage: "#b6ffd9",
+    basin: "#7dffb3",
+  },
+};
+
+const CONUS = [[-125, 24], [-66.5, 49.5]];
+const STREAMGRID_MINZOOM = 13;
+const STREAMSTATS = "https://gis.streamstats.usgs.gov/arcgis/rest/services";
+// Every StreamStats state service, from STREAMSTATS + "/stateServices?f=pjson" on
+// 2026-10-30: states, PR, DC, and six river-basin services. A state missing here (FL,
+// NE, GU, ...) has no StreamStats grid, and the chip says so.
+const STREAMGRID_SERVICES = ["ak", "al", "ar", "az", "ca", "co", "crb", "ct", "dc", "de", "drb",
+  "ga", "hi", "ia", "id", "il", "in", "ks", "ky", "la", "ma", "md", "me", "mn", "mo", "mo_stl",
+  "mrb", "ms", "mt", "nc", "nd", "nh", "nj", "nm", "nrb", "nv", "ny", "oh", "ok", "or", "pa",
+  "pr", "ri", "rrb", "sc", "sd", "tn", "tx", "ut", "va", "vt", "wa", "wi", "wv", "wy"];
+const BASIN_SERVICES = ["crb", "drb", "mo_stl", "mrb", "nrb", "rrb"];
+const GAGE_MINZOOM = 8;
+const GAGE_MAX_RECORDS = 10000;  // paging stops here; a z8 view in the East holds ~2000
+const GAGES_QUERY = `${STREAMSTATS}/StreamStats/nationalLayers/MapServer/0/query`;
+const JUMPS = {
+  conus: [CONUS],
+  alaska: [[[-170, 51], [-129, 71.5]]],
+  hawaii: [[[-161, 18.5], [-154.5, 22.5]]],
+  territories: [[[-67.5, 17.6], [-64.5, 18.6]], [[144.5, 13.2], [146.1, 20.6]], [[-171.1, -14.6], [-168.1, -11.0]]],
+};
+const EMPTY = { type: "FeatureCollection", features: [] };
+// The app's own URL (Streamlit passes it to the iframe): popup links must point at the
+// app, not at this component's index.html.
+const APP_URL = new URLSearchParams(location.search).get("streamlitUrl") || document.referrer || "/";
+const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
+
+// ---------------------------------------------------------------------------
+// Hillshade, computed in the browser from AWS Terrain Tiles (Terrarium PNG).
+//
+// MapLibre's own hillshade layer always smooths, and the USGS shaded-relief cache
+// 404s intermittently, so this protocol shades each elevation tile itself and hands
+// MapLibre an image. Drawn as a raster with nearest resampling and an inflated
+// tileSize, each elevation sample becomes a visible block: the early-USGS-DEM look.
+// URL: shade://{mode}/{z}/{x}/{y}
+// ---------------------------------------------------------------------------
+const TERRARIUM = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+// Esri's hillshade conventions: azimuth 315 (NW light), altitude 45, with the azimuth
+// turned into a math angle (counter-clockwise from east) to compare with the aspect.
+const SUN_AZIMUTH_MATH = ((360 - 315 + 90) * Math.PI) / 180;
+const SUN_ZENITH = ((90 - 45) * Math.PI) / 180;
+const FLAT_HS = Math.cos(SUN_ZENITH);
+
+function mix(a, b, t) { return a + (b - a) * t; }
+
+function shadeTile(rgba, z, y, mode) {
+  const n = 256, out = new Uint8ClampedArray(n * n * 4), elev = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) {
+    elev[i] = rgba[i * 4] * 256 + rgba[i * 4 + 1] + rgba[i * 4 + 2] / 256 - 32768;
+  }
+  // Ground size of one pixel at this tile's latitude, metres.
+  const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 0.5)) / 2 ** z)));
+  const cell = (40075016.686 * Math.cos(lat)) / (n * 2 ** z);
+  // Relief is tiny against kilometre cells; exaggerate more the further out we are.
+  const zf = Math.max(1, 2 ** ((11 - z) * 0.55));
+  const s = mode.shade;
+  const at = (x, yy) => elev[Math.min(n - 1, Math.max(0, yy)) * n + Math.min(n - 1, Math.max(0, x))];
+  for (let yy = 0; yy < n; yy++) {
+    for (let x = 0; x < n; x++) {
+      const i = yy * n + x, o = i * 4, e = elev[i];
+      if (e <= 0 && s.kind === "grey") { out.set(s.water, o); continue; }
+      if (e <= 0) { out[o + 3] = 0; continue; }
+      // Horn's method.
+      const a = at(x - 1, yy - 1), b = at(x, yy - 1), c = at(x + 1, yy - 1);
+      const d = at(x - 1, yy), f = at(x + 1, yy);
+      const g = at(x - 1, yy + 1), h = at(x, yy + 1), k = at(x + 1, yy + 1);
+      // At a tile edge the clamped neighbour is the pixel itself, so the difference
+      // spans one cell, not two; dividing by the true span keeps edges seamless.
+      const spanX = x > 0 && x < n - 1 ? 8 : 4, spanY = yy > 0 && yy < n - 1 ? 8 : 4;
+      const dzdx = ((c + 2 * f + k) - (a + 2 * d + g)) / (spanX * cell) * zf;
+      const dzdy = ((g + 2 * h + k) - (a + 2 * b + c)) / (spanY * cell) * zf;
+      const slope = Math.atan(Math.hypot(dzdx, dzdy));
+      const aspect = Math.atan2(dzdy, -dzdx);
+      let hs = Math.cos(SUN_ZENITH) * Math.cos(slope) +
+               Math.sin(SUN_ZENITH) * Math.sin(slope) * Math.cos(SUN_AZIMUTH_MATH - aspect);
+      hs = Math.max(0, Math.min(1, hs));
+      if (s.levels) hs = Math.round(hs * (s.levels - 1)) / (s.levels - 1);
+      if (s.kind === "grey") {
+        const v = Math.round(40 + hs * 215);
+        out[o] = out[o + 1] = out[o + 2] = v; out[o + 3] = 255;
+      } else {
+        // Dark modes shade relative to flat ground (hs = cos 45 = 0.707), so plains
+        // stay dark and only slopes facing the light glow.
+        const rel = Math.max(0, Math.min(1, s.flat + (hs - FLAT_HS) * s.gain));
+        if (s.kind === "tint") {
+          for (let ch = 0; ch < 3; ch++) out[o + ch] = mix(s.shadow[ch], s.highlight[ch], rel);
+        } else {
+          // Iridescent: lit faces run dark green to highlight; steep lit faces pick up an
+          // accent whose hue turns with aspect, cyan on one side of a ridge, lime on the
+          // other.
+          const t = (Math.cos(aspect) + 1) / 2;
+          const steep = Math.min(1, slope / 0.5);
+          for (let ch = 0; ch < 3; ch++) {
+            const body = rel < s.flat ? mix(s.shadow[ch], s.base[ch], rel / s.flat)
+                                      : mix(s.base[ch], s.highlight[ch], (rel - s.flat) / (1 - s.flat));
+            const accent = mix(s.accentA[ch], s.accentB[ch], t);
+            out[o + ch] = mix(body, accent, steep * 0.55 * Math.max(0, rel - s.flat) / (1 - s.flat));
+          }
+        }
+        out[o + 3] = s.alpha;
+      }
+    }
+  }
+  return out;
+}
+
+maplibregl.addProtocol("shade", async (params, abort) => {
+  const [modeName, z, x, y] = params.url.replace("shade://", "").split("/");
+  const response = await fetch(`${TERRARIUM}/${z}/${x}/${y}.png`, { signal: abort.signal });
+  if (!response.ok) throw new Error(`terrain ${response.status}`);
+  const bitmap = await createImageBitmap(await response.blob());
+  const canvas = new OffscreenCanvas(256, 256), ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+  const pixels = ctx.getImageData(0, 0, 256, 256).data;
+  const shaded = shadeTile(pixels, +z, +y, MODES[modeName]);
+  ctx.putImageData(new ImageData(shaded, 256, 256), 0, 0);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return { data: await blob.arrayBuffer() };
+});
+
+function shadeTiles(mode) { return [`shade://${mode}/{z}/{x}/{y}`]; }
+
+// ---------------------------------------------------------------------------
+// The map
+// ---------------------------------------------------------------------------
+// The nonce starts at the load time, so a remounted iframe never repeats one Python has seen.
+let map = null, last = null, marker = null, nonce = Date.now(), ready = false, pending = null;
+let shadeMode = null;    // the mode the shade sources currently request
+let appliedMode = null;  // the mode the map shows; a style button sets it before Python
+let pendingMode = null;  // a clicked style Python has not echoed back yet
+let gageSeq = 0, gridSeq = 0;  // drop responses that a later request has overtaken
+// One fetch of the boundaries, shared by the map source and the StreamGrid state index.
+const statesData = fetch("./states.geojson").then((r) => r.json());
+
+function coverageTint(badge) {
+  if (!badge) return null;
+  if (badge.startsWith("verified")) return "verified";
+  if (badge.startsWith("partial")) return "partial";
+  if (badge.startsWith("nss")) return "snapshot";
+  return null;
+}
+
+function createMap(args) {
+  shadeMode = args.mode;
+  map = new maplibregl.Map({
+    container: "map",
+    bounds: CONUS,
+    fitBoundsOptions: { padding: 10 },
+    attributionControl: { compact: true },
+    renderWorldCopies: true,
+    // No rotation: there is no compass to put north back.
+    dragRotate: false,
+    pitchWithRotate: false,
+    touchPitch: false,
+    style: {
+      version: 8,
+      sources: {
+        // tileSize 1024 for 256-px images: MapLibre fetches two zoom levels coarser
+        // and stretches each sample over 4x4 screen pixels.
+        "shade-coarse": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 1024, maxzoom: 13,
+          attribution: "Terrain: Mapzen/AWS Terrain Tiles" },
+        "shade-fine": { type: "raster", tiles: shadeTiles(args.mode), tileSize: 256, maxzoom: 15 },
+        lights: { type: "raster", tileSize: 256, maxzoom: 8,
+          tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/" +
+                  "2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"],
+          attribution: "Night lights: NASA Black Marble" },
+        // NHD flowlines and WBD units with the server's own scale-dependent rendering:
+        // HUC2/4 and large rivers far out, HUC12 and small streams close in.
+        hydro: { type: "raster", tileSize: 256, maxzoom: 16,
+          tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSHydroCached/MapServer/tile/{z}/{y}/{x}"],
+          attribution: "Hydrography: USGS The National Map" },
+        states: { type: "geojson", data: EMPTY, promoteId: "code",
+          attribution: "Boundaries: US Census TIGERweb" },
+      },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": MODES[args.mode].background } },
+        { id: "lights", type: "raster", source: "lights", layout: { visibility: "none" },
+          paint: { "raster-opacity": 0.9 } },
+        { id: "shade-coarse", type: "raster", source: "shade-coarse", maxzoom: 12,
+          paint: { "raster-resampling": "nearest", "raster-fade-duration": 0,
+                   "raster-opacity": ["interpolate", ["linear"], ["zoom"], 10, 1, 12, 0] } },
+        { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9.5,
+          paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 9.5, 0, 11.5, 1] } },
+        { id: "hydro", type: "raster", source: "hydro" },
+        { id: "state-fill", type: "fill", source: "states", layout: { visibility: "none" },
+          paint: { "fill-opacity": 0.25,
+                   "fill-color": ["match", ["coalesce", ["feature-state", "tint"], ""],
+                     "verified", COVERAGE_COLORS.verified, "partial", COVERAGE_COLORS.partial,
+                     "snapshot", COVERAGE_COLORS.snapshot, "rgba(0,0,0,0)"] } },
+        { id: "state-line", type: "line", source: "states",
+          paint: { "line-width": 0.6, "line-color": MODES[args.mode].stateLine.color,
+                   "line-opacity": MODES[args.mode].stateLine.opacity } },
+      ],
+    },
+  });
+  map.touchZoomRotate.disableRotation();
+  map.keyboard.disableRotation();
+  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+  map.on("load", () => {
+    addOverlayLayers();
+    ready = true;
+    applyAll(pending || args, null);
+    pending = null;
+    statesData.then((fc) => {
+      map.getSource("states").setData(fc);
+      if (last) applyCoverage(last.coverage, last.overlays);
+    });
+    updateGages();
+  });
+  map.on("click", (e) => {
+    closeMenu();
+    if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // the popup's
+    // Move the orb now; Python's echo of the point arrives a rerun later.
+    const at = e.lngLat.wrap();  // a click on a repeated world copy, back inside +-180
+    applyPoint([at.lat, at.lng], appliedMode);
+    emit("point", at);
+  });
+  map.on("click", "gages", (e) => openGagePopup(e.features[0]));
+  map.on("mouseenter", "gages", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "gages", () => { map.getCanvas().style.cursor = ""; });
+  map.on("contextmenu", (e) => {
+    e.preventDefault();
+    if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // a gage
+    openMenu(e.point, e.lngLat.wrap());
+  });
+  map.on("movestart", closeMenu);
+  map.on("moveend", updateStreamGrid);
+  map.on("moveend", scheduleGages);
+}
+
+function emit(action, lngLat) {
+  setValue({ action, lat: lngLat.lat, lon: lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
+}
+
+// Basin, snapped pour point and gages sit above the state lines. Added after load so
+// the gage icons exist before a layer asks for them.
+function addOverlayLayers() {
+  for (const mode of Object.keys(MODES)) map.addImage(`gage-${mode}`, triangle(MODES[mode].gage));
+  map.addSource("basin", { type: "geojson", data: EMPTY });
+  map.addSource("snap", { type: "geojson", data: EMPTY });
+  map.addSource("gages", { type: "geojson", data: EMPTY,
+    attribution: "Streamgages: USGS StreamStats" });
+  map.addLayer({ id: "basin-fill", type: "fill", source: "basin", paint: { "fill-opacity": 0.18 } });
+  map.addLayer({ id: "basin-line", type: "line", source: "basin", paint: { "line-width": 2 } });
+  map.addLayer({ id: "gages", type: "symbol", source: "gages", minzoom: GAGE_MINZOOM,
+    layout: { "icon-image": "gage-dem", "icon-allow-overlap": true, "icon-ignore-placement": true,
+              // ~10 px at zoom 8, the full 16 px by zoom 12: dense areas stay legible.
+              "icon-size": ["interpolate", ["linear"], ["zoom"], 8, 0.62, 12, 1] } });
+  map.addLayer({ id: "snap", type: "circle", source: "snap",
+    paint: { "circle-radius": 5, "circle-stroke-width": 2, "circle-stroke-color": "#ffffff" } });
+}
+
+// A hollow equilateral triangle, the streamgage symbol, drawn once per mode colour.
+function triangle(color) {
+  const size = 16, ratio = 2, px = size * ratio;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = px;
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 2 * ratio;
+  ctx.strokeStyle = color;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(px / 2, 3 * ratio);
+  ctx.lineTo(px - 2 * ratio, px - 3 * ratio);
+  ctx.lineTo(2 * ratio, px - 3 * ratio);
+  ctx.closePath();
+  ctx.stroke();
+  const img = ctx.getImageData(0, 0, px, px);
+  return { width: px, height: px, data: img.data, pixelRatio: ratio };
+}
+
+// ---------------------------------------------------------------------------
+// Streamgages: fetched for the view from GAGE_MINZOOM in, debounced, cached per area.
+// ---------------------------------------------------------------------------
+const gageCache = new Map();
+let gageTimer = null;
+
+function scheduleGages() {
+  if (!ready) return;
+  clearTimeout(gageTimer);
+  gageTimer = setTimeout(updateGages, 300);
+}
+
+async function updateGages() {
+  const mine = ++gageSeq;
+  if (map.getZoom() < GAGE_MINZOOM) { map.getSource("gages").setData(EMPTY); return; }
+  const b = map.getBounds(), r = (v, f) => f(v * 2) / 2;  // snap to a 0.5-degree grid
+  const box = [r(b.getWest(), Math.floor), r(b.getSouth(), Math.floor),
+               r(b.getEast(), Math.ceil), r(b.getNorth(), Math.ceil)];
+  const key = box.join(",");
+  if (!gageCache.has(key)) {
+    // The service returns at most 1000 records a request (maxRecordCount) and flags
+    // exceededTransferLimit when it stopped short: page with resultOffset until done.
+    const features = [];
+    try {
+      for (let offset = 0; offset < GAGE_MAX_RECORDS; offset += 1000) {
+        const url = `${GAGES_QUERY}?where=1%3D1&geometry=${key}&geometryType=esriGeometryEnvelope` +
+                    "&inSR=4326&outFields=STA_ID,STA_NAME&outSR=4326&orderByFields=OBJECTID" +
+                    `&resultOffset=${offset}&resultRecordCount=1000&f=geojson`;
+        const fc = await (await fetch(url)).json();
+        if (!fc.features) return;  // a service error; retried on the next moveend
+        features.push(...fc.features);
+        const more = fc.exceededTransferLimit || (fc.properties && fc.properties.exceededTransferLimit);
+        if (!more) break;
+      }
+    } catch (err) { return; }
+    gageCache.set(key, { type: "FeatureCollection", features });
+  }
+  if (mine !== gageSeq) return;  // the view moved on while this was loading
+  map.getSource("gages").setData(gageCache.get(key));
+}
+
+function openGagePopup(feature) {
+  const id = String(feature.properties.STA_ID || "").trim();
+  const name = String(feature.properties.STA_NAME || "").trim();
+  const app = new URL(APP_URL, location.href);
+  app.search = `?page=gage&site=${encodeURIComponent(id)}`;
+  const root = document.createElement("div");
+  const title = document.createElement("b");
+  title.textContent = id;
+  const label = document.createElement("div");
+  label.textContent = name;  // a text node: names are data, never markup
+  const links = document.createElement("div");
+  const page = document.createElement("a");
+  page.href = app.toString();
+  page.target = "_top";
+  page.textContent = "Gage page";
+  const usgs = document.createElement("a");
+  usgs.href = `https://waterdata.usgs.gov/monitoring-location/${encodeURIComponent(id)}/`;
+  usgs.target = "_blank";
+  usgs.rel = "noopener";
+  usgs.textContent = "USGS";
+  links.append(page, " · ", usgs);
+  root.append(title, label, links);
+  new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+    .setLngLat(feature.geometry.coordinates).setDOMContent(root).addTo(map);
+}
+
+// ---------------------------------------------------------------------------
+// Context menu (right click): Delineate, Estimate, Copy lat/lon, Zoom to point.
+// ---------------------------------------------------------------------------
+let menuAt = null;
+
+function openMenu(point, lngLat) {
+  menuAt = lngLat;
+  const menu = document.getElementById("menu");
+  document.getElementById("menu-head").textContent = `${lngLat.lat.toFixed(6)}, ${lngLat.lng.toFixed(6)}`;
+  menu.hidden = false;
+  const w = map.getContainer().clientWidth, h = map.getContainer().clientHeight;
+  menu.style.left = `${Math.min(point.x, w - menu.offsetWidth - 4)}px`;
+  menu.style.top = `${Math.min(point.y, h - menu.offsetHeight - 4)}px`;
+}
+
+function closeMenu() { document.getElementById("menu").hidden = true; }
+
+document.getElementById("menu").addEventListener("click", (event) => {
+  const act = event.target.dataset && event.target.dataset.act;
+  if (!act || !menuAt) return;
+  const at = menuAt;
+  if (act === "delineate" || act === "estimate") {
+    applyPoint([at.lat, at.lng], appliedMode);
+    emit(act, at);
+    closeMenu();
+  } else if (act === "copy") {
+    const text = `${at.lat.toFixed(6)}, ${at.lng.toFixed(6)}`;
+    const head = document.getElementById("menu-head");
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
+      .then(() => { head.textContent = "copied"; }, () => { head.textContent = text + "  (select to copy)"; });
+    setTimeout(closeMenu, 700);
+  } else if (act === "zoom") {
+    closeMenu();
+    map.flyTo({ center: at, zoom: 14 });
+  }
+});
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMenu(); });
+
+// ---------------------------------------------------------------------------
+// Jump buttons. The map opens on CONUS; these are the way to everywhere else.
+// ---------------------------------------------------------------------------
+const jumpStep = {};
+document.querySelector(".jump").addEventListener("click", (event) => {
+  const name = event.target.dataset && event.target.dataset.jump;
+  if (!name || !map) return;
+  const stops = JUMPS[name], i = (jumpStep[name] || 0) % stops.length;
+  jumpStep[name] = i + 1;
+  closeMenu();
+  map.fitBounds(stops[i], { padding: 20 });
+});
+
+// ---------------------------------------------------------------------------
+// Style buttons: restyle now, then tell Python so the choice survives reruns.
+// ---------------------------------------------------------------------------
+document.querySelector(".modes").addEventListener("click", (event) => {
+  const mode = event.target.dataset && event.target.dataset.mode;
+  if (!mode || !ready || mode === appliedMode) return;
+  applyMode(mode);
+  pendingMode = mode;
+  setValue({ action: "mode", mode, nonce: ++nonce });
+});
+
+function bbox(geometry) {
+  let w = 180, s = 90, e = -180, n = -90;
+  const walk = (c) => {
+    if (typeof c[0] === "number") { w = Math.min(w, c[0]); e = Math.max(e, c[0]); s = Math.min(s, c[1]); n = Math.max(n, c[1]); }
+    else c.forEach(walk);
+  };
+  walk(geometry.coordinates);
+  return [[w, s], [e, n]];
+}
+
+function applyBasin(basin, snap) {
+  map.getSource("basin").setData(basin || EMPTY);
+  map.getSource("snap").setData(snap
+    ? { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [snap[1], snap[0]] } }
+    : EMPTY);
+  if (basin) map.fitBounds(bbox(basin.geometry), { padding: { top: 50, bottom: 70, left: 50, right: 50 }, maxZoom: 15 });
+}
+
+// ---------------------------------------------------------------------------
+// StreamGrid: the StreamStats stream cells, from each state's own map service.
+// Shown from STREAMGRID_MINZOOM in, one raster source per service in view, so a
+// user can see which cells will snap and delineate before clicking.
+// ---------------------------------------------------------------------------
+let stateIndex = null;               // [{code, boxes: [[w, s, e, n], ...]}]
+const gridLayerIds = new Map();      // service -> "31,32,33" | null (no StreamGrid layer)
+const basinExtents = new Map();      // basin service -> [w, s, e, n]
+const gridAdded = new Set();
+
+async function loadStateIndex() {
+  if (stateIndex) return stateIndex;
+  const fc = await statesData;
+  stateIndex = fc.features.map((f) => {
+    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    return { code: f.properties.code, boxes: polys.map((p) => {
+      let w = 180, s = 90, e = -180, n = -90;
+      for (const [x, y] of p[0]) { w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y); }
+      return [w, s, e, n];
+    }) };
+  });
+  return stateIndex;
+}
+
+const overlaps = (a, b) => a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+
+async function gridLayers(service) {
+  if (gridLayerIds.has(service)) return gridLayerIds.get(service);
+  // Returns the layer ids, null for a service with no StreamGrid layer, or undefined
+  // when the request failed. Only answers are cached; a failure is retried next moveend.
+  try {
+    const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer/layers?f=json`)).json();
+    if (!Array.isArray(info.layers)) return undefined;  // an ArcGIS error body
+    const grid = info.layers.filter((l) => l.name === "StreamGrid").map((l) => l.id);
+    const ids = grid.length ? grid.join(",") : null;
+    gridLayerIds.set(service, ids);
+    return ids;
+  } catch (err) { return undefined; }
+}
+
+async function basinExtent(service) {
+  if (basinExtents.has(service)) return basinExtents.get(service);
+  try {
+    const info = await (await fetch(`${STREAMSTATS}/stateServices/${service}/MapServer?f=json`)).json();
+    const e = info.fullExtent, r = 6378137;
+    if (!e) return undefined;  // an ArcGIS error body; retried next moveend
+    const lon = (x) => (x / r) * 180 / Math.PI;
+    const lat = (y) => (2 * Math.atan(Math.exp(y / r)) - Math.PI / 2) * 180 / Math.PI;
+    const box = [lon(e.xmin), lat(e.ymin), lon(e.xmax), lat(e.ymax)];
+    basinExtents.set(service, box);
+    return box;
+  } catch (err) { return undefined; }
+}
+
+function addGrid(service, ids) {
+  if (gridAdded.has(service)) return;
+  gridAdded.add(service);
+  map.addSource(`sg-${service}`, { type: "raster", tileSize: 256, minzoom: STREAMGRID_MINZOOM,
+    tiles: [`${STREAMSTATS}/stateServices/${service}/MapServer/export?bbox={bbox-epsg-3857}` +
+            `&bboxSR=3857&imageSR=3857&size=256,256&layers=show:${ids}&transparent=true&format=png32&f=image`],
+    attribution: "StreamGrid: USGS StreamStats" });
+  map.addLayer({ id: `sg-${service}`, type: "raster", source: `sg-${service}`, minzoom: STREAMGRID_MINZOOM,
+    paint: Object.assign({ "raster-resampling": "nearest", "raster-opacity": 0.9 },
+                         gridPaint(MODES[appliedMode || "dem"])) }, "state-fill");
+}
+
+function gridPaint(m) {
+  // The services draw one colour; nudge it toward the mode's palette.
+  return { "raster-hue-rotate": m.streamgrid.hueRotate, "raster-saturation": m.streamgrid.saturation,
+           "raster-brightness-min": m.streamgrid.brightnessMin };
+}
+
+async function updateStreamGrid() {
+  if (!ready) return;
+  const mine = ++gridSeq;
+  const chip = document.getElementById("chip-grid");
+  if (map.getZoom() < STREAMGRID_MINZOOM) { chip.hidden = true; return; }
+  const b = map.getBounds(), view = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+  const index = await loadStateIndex();
+  const inView = index.filter((s) => s.boxes.some((box) => overlaps(box, view))).map((s) => s.code);
+  // Every service's metadata at once; each answer is cached, so later moves are instant.
+  const [stateIds, basinIds] = await Promise.all([
+    Promise.all(inView.map((code) => {
+      const service = code.toLowerCase();
+      return STREAMGRID_SERVICES.includes(service) ? gridLayers(service) : null;
+    })),
+    Promise.all(BASIN_SERVICES.map(async (service) => {
+      const box = await basinExtent(service);
+      return box && overlaps(box, view) ? gridLayers(service) : null;
+    })),
+  ]);
+  if (mine !== gridSeq) return;  // the view moved on while this was loading
+  const served = [], unserved = [], failed = [];
+  inView.forEach((code, i) => {
+    const ids = stateIds[i];
+    if (ids) { served.push(code); addGrid(code.toLowerCase(), ids); }
+    else if (ids === undefined) failed.push(code);
+    else unserved.push(code);
+  });
+  BASIN_SERVICES.forEach((service, i) => { if (basinIds[i]) addGrid(service, basinIds[i]); });
+  chip.hidden = inView.length === 0;
+  const notes = [];
+  if (unserved.length) notes.push(`none for ${unserved.join(", ")}`);
+  if (failed.length) notes.push(`${failed.join(", ")} not reachable, retrying`);
+  chip.textContent = served.length
+    ? `StreamGrid: click a lit cell${notes.length ? ` (${notes.join("; ")})` : ""}`
+    : failed.length && !unserved.length
+      ? `StreamStats grid for ${failed.join(", ")} not reachable; retrying on the next move`
+      : `no StreamStats grid for ${unserved.join(", ")}${failed.length ? ` (${notes[1]})` : ""}`;
+}
+
+function applyMode(mode) {
+  const m = MODES[mode];
+  appliedMode = mode;
+  document.querySelectorAll(".modes button")
+    .forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  map.setPaintProperty("background", "background-color", m.background);
+  if (shadeMode !== mode) {
+    map.getSource("shade-coarse").setTiles(shadeTiles(mode));
+    map.getSource("shade-fine").setTiles(shadeTiles(mode));
+    shadeMode = mode;
+  }
+  map.setLayoutProperty("lights", "visibility", mode === "night" ? "visible" : "none");
+  map.setPaintProperty("hydro", "raster-brightness-min", m.rivers.brightnessMin);
+  map.setPaintProperty("hydro", "raster-brightness-max", m.rivers.brightnessMax);
+  map.setPaintProperty("hydro", "raster-saturation", m.rivers.saturation);
+  map.setPaintProperty("hydro", "raster-hue-rotate", m.rivers.hueRotate);
+  map.setPaintProperty("hydro", "raster-opacity", m.rivers.opacity);
+  for (const service of gridAdded) {
+    for (const [prop, value] of Object.entries(gridPaint(m))) map.setPaintProperty(`sg-${service}`, prop, value);
+  }
+  map.setPaintProperty("state-line", "line-color", m.stateLine.color);
+  map.setPaintProperty("state-line", "line-opacity", m.stateLine.opacity);
+  map.setPaintProperty("basin-fill", "fill-color", m.basin);
+  map.setPaintProperty("basin-line", "line-color", m.basin);
+  map.setPaintProperty("snap", "circle-color", m.basin);
+  map.setLayoutProperty("gages", "icon-image", `gage-${mode}`);
+  const root = document.documentElement.style;
+  root.setProperty("--chip-bg", m.chip.bg);
+  root.setProperty("--chip-fg", m.chip.fg);
+  root.setProperty("--chip-border", m.chip.border);
+  if (marker) marker.getElement().style.setProperty("--orb", m.marker);
+}
+
+function applyPoint(point, mode) {
+  if (!point) { if (marker) { marker.remove(); marker = null; } return; }
+  const lngLat = [point[1], point[0]];
+  if (!marker) {
+    const el = document.createElement("div");
+    el.className = "orb";
+    marker = new maplibregl.Marker({ element: el }).setLngLat(lngLat).addTo(map);
+  } else {
+    marker.setLngLat(lngLat);
+  }
+  marker.getElement().style.setProperty("--orb", MODES[mode].marker);
+}
+
+function applyCoverage(coverage, overlays) {
+  for (const [code, badge] of Object.entries(coverage || {})) {
+    map.setFeatureState({ source: "states", id: code }, { tint: coverageTint(badge) });
+  }
+  const on = overlays.includes("coverage");
+  map.setLayoutProperty("state-fill", "visibility", on ? "visible" : "none");
+  document.getElementById("chip-coverage").hidden = !on;
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function markerAt(point) {
+  if (!point || !marker) return !point && !marker;
+  const at = marker.getLngLat();
+  return Math.abs(at.lat - point[0]) < 1e-6 && Math.abs(at.lng - point[1]) < 1e-6;
+}
+
+// Touch only what changed since the last render: a typed digit moves one marker.
+function applyAll(args, prev) {
+  // A rerun that was already running when a style button was clicked still carries the
+  // old style: keep the click until a render confirms it.
+  if (pendingMode && args.mode === pendingMode) pendingMode = null;
+  if (!pendingMode && args.mode !== appliedMode) applyMode(args.mode);
+  // Python's point wins: this also snaps the orb back when Python ignored a click.
+  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) applyPoint(args.point, appliedMode);
+  if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
+    applyCoverage(args.coverage, args.overlays);
+  }
+  const hash = (a) => (a && a.basin ? a.basin.properties.hash : null);
+  if (!prev || hash(prev) !== hash(args) || !same(prev.snap, args.snap)) {
+    applyBasin(args.basin, args.snap);
+  }
+}
+
+function onRender(args) {
+  if (!map) {
+    createMap(args);
+    send("streamlit:setFrameHeight", { height: args.height });
+  } else if (!ready) {
+    pending = args;
+  } else {
+    applyAll(args, last);
+  }
+  last = args;
+}
+
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
+});
+send("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>
