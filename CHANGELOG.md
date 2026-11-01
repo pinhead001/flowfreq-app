@@ -28,8 +28,7 @@ Streamlit floor rises to 1.40 (`st.segmented_control`).
   list. State and territory lines; an optional tint by equation coverage (verified / partial / snapshot).
 - **StreamStats StreamGrid** from zoom 13: the cells that will snap and delineate, with a
   chip naming states that have no grid.
-- **Streamgages** from zoom 8 as hollow triangles; a popup links the gage page (a
-  placeholder for now, `?page=gage&site=`) and the USGS monitoring-location page.
+- **Streamgages** from zoom 8 as hollow triangles; a popup opens the gage page and the USGS monitoring-location page.
 - **Left click** fills latitude, longitude and the jurisdiction under the point; nothing
   runs until Estimate. **Right click**: Delineate (basin only), Estimate (basin and
   quantiles), Copy lat/lon, Zoom to point. Typed coordinates move the pulsing marker.

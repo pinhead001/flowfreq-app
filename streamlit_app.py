@@ -364,11 +364,6 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("USGS Hydrograph-erator")
-st.markdown(
-    "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
-)
-
 PAGE_GAGED = "Gaged site"
 PAGE_UNGAGED = "Ungaged site"
 PAGE_GAGE = "Gage"
@@ -394,7 +389,7 @@ if requested == PAGE_GAGE:
     if linked_site:
         gage_ui.render(linked_site)
     else:
-        st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
+        gage_ui.back_button()
         st.error("That is not a valid USGS site number (8 to 15 digits).")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
@@ -412,6 +407,19 @@ if page == PAGE_UNGAGED:
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
+
+# The Gaged page. The map and gage pages above carry their own headers.
+st.title("USGS Hydrograph-erator")
+st.markdown(
+    "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
+)
+# Arrived from a gage page's "Open in Bulletin 17C" button.
+handed_off = requested == PAGE_GAGED and bool(linked_site)
+if handed_off:
+    st.info(
+        f"Site {linked_site} is filled in and flood frequency analysis is ticked. Press "
+        "**Download Data** in the sidebar to run Bulletin 17C."
+    )
 
 # Sidebar inputs
 st.sidebar.header("Input Parameters")
@@ -475,7 +483,7 @@ date_range_container = st.sidebar.container()
 # Flood Frequency Analysis section
 st.sidebar.markdown("---")
 st.sidebar.subheader("Flood Frequency Analysis")
-enable_ffa = st.sidebar.checkbox("Enable Flood Frequency Analysis", value=False)
+enable_ffa = st.sidebar.checkbox("Enable Flood Frequency Analysis", value=handed_off)
 if enable_ffa:
     skew_source = st.sidebar.radio(
         "Skew Source",
