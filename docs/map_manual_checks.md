@@ -49,6 +49,15 @@ Use a real stream: Rattlesnake Creek above Missoula, MT (46.93, -113.97).
 - [ ] A basin crossing a state line (try the MT/WY line near 45.0, -108.0) offers
       "Re-run with WY"
 
+## Last run: 2026-11-01 (Playwright against `streamlit run`, Chrome 1400x1300)
+
+Delineate, live: right click at 46.93, -113.97 -> "Delineate (basin only)" showed the
+"Delineating with StreamStats" chip, then drew the basin and fitted the map to it (zoom 12.5),
+with "Basin delineated: 1.6 sq mi. Press Estimate for flood quantiles." under the map, the
+GeoJSON download, and no quantile table; no console errors. (The point snaps to a small
+tributary, not Rattlesnake Creek itself.) Estimate and "Re-run with WY" still unchecked:
+`ss-hydro` returned 502 on every attempt that day, while `ss-delineate` answered in about 12 s.
+
 ## Last run: 2026-10-31 (Playwright against `streamlit run`, Chrome 1400x1300)
 
 All items above checked except the two marked here:
