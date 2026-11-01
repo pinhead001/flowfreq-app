@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### flowfreq v0.20.0
+
+The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it adds for the app:
+- `run_ffa` results carry `stationarity`, the trend and change-point screen of the annual
+  peaks (plain-language `flags`); the app does not show it yet.
+- StreamStats failures no pour point can fix are their own errors:
+  `RegionNotDelineatedError` (FL, MI and NE have no stream grid) and
+  `RegulatedDelineationError` (a basin StreamStats flags regulated). Both are `ValueError`s,
+  so the current handlers still catch them.
+- Alaska ungaged estimates no longer need a region choice (the two statewide drainage-area
+  classes are chosen by drainage area).
+
 ### Gage page
 
 - **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show), coloured by qualification code; **Open in Bulletin 17C (Gaged page)**, which opens the Gaged page in a new window and runs the download and Bulletin 17C there on arrival (`?page=gaged&site=&run=1`, once per session), leaving the gage page open; links to the USGS pages; CSV downloads of the daily values (with their approval codes) and the annual peaks. Site, daily values and peaks download in parallel (1.2 s instead of 5.0 s for 12340500, cold).
