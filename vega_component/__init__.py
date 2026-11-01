@@ -2,8 +2,8 @@
 
 Streamlit's own ``st.altair_chart`` draws Vega-Lite as compiled, and a Vega-Lite interval
 brush can only be drawn, slid and cleared: there is no way to drag one of its edges. This
-component draws the same spec with vega-embed (from a CDN, pinned with SRI hashes, as
-``map_component`` loads MapLibre) and, before rendering, patches the compiled Vega so each
+component draws the same spec with vega-embed (bundled in ``vendor/`` as published, with
+their SRI hashes and BSD-3 licences) and, before rendering, patches the compiled Vega so each
 named interval selection on the x axis gets a grip at each end. Dragging a grip moves that
 edge; dragging the box still slides it; double-clicking still clears it.
 
