@@ -14,6 +14,7 @@ the page has one code path for failure. :func:`render` is the page.
 
 from __future__ import annotations
 
+import io
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +24,14 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from flowfreq.stationarity import stationarity_screen
+from flowfreq.hydrograph import Hydrograph
+from flowfreq.regime import flow_duration_curve
+from flowfreq.stationarity import (
+    POT_LOW_QUANTILE,
+    pot_counts,
+    stationarity_report,
+    stationarity_screen,
+)
 from flowfreq.usgs import USGSgage
 from flowfreq.waterdata import download_daily
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
@@ -546,6 +554,114 @@ def _peak_dots(
     return _with_log(frame).reset_index(drop=True)
 
 
+#: A leap water year (WY 2020) whose dates label the summary hydrograph's day axis.
+_DOWY_ORIGIN = pd.Timestamp("2019-10-01")
+
+
+def _log_axis(frame: pd.DataFrame, columns: Tuple[str, ...]) -> bool:
+    # Log unless some value to be drawn is zero or negative, which a log axis cannot place.
+    values = frame[list(columns)].to_numpy(dtype=float)
+    return bool((values[np.isfinite(values)] > 0).all())
+
+
+def summary_hydrograph_chart(daily: pd.DataFrame) -> alt.LayerChart:
+    """Daily flow percentiles by day of the water year, from
+    :meth:`flowfreq.hydrograph.Hydrograph.get_summary_stats`.
+
+    The 10-90 and 25-75 percent bands, the median and the mean, on a log axis (linear
+    when a percentile reaches zero). Hover for the day's values.
+    """
+    stats = Hydrograph.get_summary_stats(daily[["flow_cfs"]])
+    stats["date"] = _DOWY_ORIGIN + pd.to_timedelta(stats["day_of_water_year"] - 1, unit="D")
+    log = _log_axis(stats, ("p10", "p90", "p50"))
+    scale = alt.Scale(type="log") if log else alt.Scale(zero=True)
+    x = alt.X("date:T", title="Water year (October to September)", axis=alt.Axis(format="%b"))
+    base = alt.Chart(stats).encode(x=x)
+    flow = "Daily mean flow (cfs)"
+    hover = alt.selection_point(
+        nearest=True, on="pointerover", clear="pointerout", encodings=["x"], empty=False
+    )
+    tooltip = [
+        alt.Tooltip("date:T", title="Day", format="%b %-d"),
+        alt.Tooltip("p90:Q", title="90th percentile", format=",.0f"),
+        alt.Tooltip("p75:Q", title="75th percentile", format=",.0f"),
+        alt.Tooltip("p50:Q", title="Median", format=",.0f"),
+        alt.Tooltip("mean:Q", title="Mean", format=",.0f"),
+        alt.Tooltip("p25:Q", title="25th percentile", format=",.0f"),
+        alt.Tooltip("p10:Q", title="10th percentile", format=",.0f"),
+    ]
+    return alt.layer(
+        base.mark_area(color="#c6dbef", tooltip=False).encode(
+            y=alt.Y("p10:Q", title=flow, scale=scale), y2="p90:Q"
+        ),
+        base.mark_area(color="#9ecae1", tooltip=False).encode(
+            y=alt.Y("p25:Q", scale=scale), y2="p75:Q"
+        ),
+        base.mark_line(color="#08519c", strokeWidth=1.5, tooltip=False).encode(
+            y=alt.Y("p50:Q", scale=scale)
+        ),
+        base.mark_line(color="#d62728", strokeDash=[4, 3], strokeWidth=1, tooltip=False).encode(
+            y=alt.Y("mean:Q", scale=scale)
+        ),
+        base.mark_rule(color="#555")
+        .encode(opacity=alt.condition(hover, alt.value(0.6), alt.value(0)), tooltip=tooltip)
+        .add_params(hover),
+    ).properties(height=260, title="Summary hydrograph")
+
+
+#: Exceedance percentages the flow-duration curve is drawn at: dense in the tails.
+FDC_PCT = tuple(
+    sorted(
+        {0.1, 0.2, 0.5, 99.5, 99.8, 99.9}
+        | {float(v) for v in np.arange(1, 100)}
+        | {float(v) for v in np.arange(0.5, 1.0, 0.1).round(1)}
+    )
+)
+
+
+def duration_curve_chart(daily: pd.DataFrame) -> alt.Chart:
+    """The flow-duration curve of the daily record, from
+    :func:`flowfreq.regime.flow_duration_curve`, on a log axis (linear with zero flows)."""
+    curve = flow_duration_curve(daily[["flow_cfs"]], exceedance_pct=FDC_PCT)
+    log = _log_axis(curve, ("flow_cfs",))
+    return (
+        alt.Chart(curve)
+        .mark_line(color="#08519c", strokeWidth=1.5, point=alt.OverlayMarkDef(size=12, opacity=0))
+        .encode(
+            x=alt.X(
+                "exceedance_pct:Q",
+                title="Percent of days the flow is equaled or exceeded",
+                scale=alt.Scale(domain=[0, 100]),
+            ),
+            y=alt.Y(
+                "flow_cfs:Q",
+                title="Daily mean flow (cfs)",
+                scale=alt.Scale(type="log") if log else alt.Scale(zero=True),
+            ),
+            tooltip=[
+                alt.Tooltip("exceedance_pct:Q", title="Exceeded on (% of days)", format="g"),
+                alt.Tooltip("flow_cfs:Q", title="Flow (cfs)", format=",.0f"),
+            ],
+        )
+        .properties(height=260, title="Flow-duration curve")
+    )
+
+
+def _regime_section(daily: Dict[str, Any]) -> None:
+    frame = daily.get("daily")
+    if frame is None or frame.empty:
+        return
+    left, right = st.columns(2)
+    left.altair_chart(summary_hydrograph_chart(frame), use_container_width=True)
+    right.altair_chart(duration_curve_chart(frame), use_container_width=True)
+    st.caption(
+        "From every published day, provisional included. Summary hydrograph: the bands are "
+        "the 10-90 and 25-75 percent ranges of the flows on each day of the water year, the "
+        "line their median, the dashed line their mean. Flow-duration curve: q10 is the "
+        "flow equaled or exceeded on 10 percent of days."
+    )
+
+
 def daily_csv(daily: pd.DataFrame) -> str:
     """The daily values as CSV: ``date,flow_cfs[,qualification_code]``, one row per
     published day."""
@@ -607,23 +723,9 @@ def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
         :func:`flowfreq.stationarity.stationarity_screen`'s result, or ``{"error": msg}``
         when the screen cannot run (fewer than ten peaks).
     """
-    values = pd.Series(
-        peaks["peak_flow_cfs"].to_numpy(dtype=float),
-        index=peaks["water_year"].to_numpy(dtype=int),
-    )
-    finite = values.dropna()
-    codes = (
-        peaks["qualification_code"].astype("string").fillna("").tolist()
-        if "qualification_code" in peaks
-        else None
-    )
+    values, codes, log = _peak_series(peaks)
     try:
-        return stationarity_screen(
-            values,
-            log=bool(len(finite)) and bool((finite > 0).all()),
-            alpha=SCREEN_ALPHA,
-            peak_codes=codes,
-        )
+        return stationarity_screen(values, log=log, alpha=SCREEN_ALPHA, peak_codes=codes)
     except ValueError as exc:
         logger.info("stationarity screen not run for the gage page: %s", exc)
         return {"error": str(exc)}
@@ -636,6 +738,104 @@ def change_year(screen: Dict[str, Any]) -> Optional[int]:
     if year is None or p_value is None or p_value >= SCREEN_ALPHA:
         return None
     return int(year)
+
+
+def _peak_series(peaks: pd.DataFrame) -> Tuple[pd.Series, Optional[list], bool]:
+    # Peaks by water year, their codes, and whether to screen in log10 (every peak > 0).
+    values = pd.Series(
+        peaks["peak_flow_cfs"].to_numpy(dtype=float),
+        index=peaks["water_year"].to_numpy(dtype=int),
+    )
+    finite = values.dropna()
+    codes = (
+        peaks["qualification_code"].astype("string").fillna("").tolist()
+        if "qualification_code" in peaks
+        else None
+    )
+    return values, codes, bool(len(finite)) and bool((finite > 0).all())
+
+
+def event_counts(daily: Optional[pd.DataFrame]) -> Any:
+    """Peaks-over-threshold counts per water year for the report, or None.
+
+    Two events a year, the usual choice for rain-driven floods; where that pulls the
+    threshold below the 75th percentile of daily flow (a snowmelt river, whose freshet
+    is one event), one a year instead, as :func:`flowfreq.stationarity.pot_counts`
+    advises. None without a daily record or with under five complete water years.
+    """
+    if daily is None or daily.empty:
+        return None
+    flows = daily["flow_cfs"].astype("float64")
+    try:
+        counts = pot_counts(flows, events_per_year=2.0)
+        if counts.quantile < POT_LOW_QUANTILE:
+            counts = pot_counts(flows, events_per_year=1.0)
+    except ValueError as exc:
+        logger.info("no event counts for the stationarity report: %s", exc)
+        return None
+    return counts
+
+
+@st.cache_data(ttl=CACHE_TTL_S, max_entries=16, show_spinner=False)
+def report_files(
+    site_no: str, name: str, peaks: pd.DataFrame, daily: Optional[pd.DataFrame]
+) -> Dict[str, Any]:
+    """The library's one-page stationarity report, as files to download.
+
+    Parameters
+    ----------
+    site_no, name : str
+        For the title and file names.
+    peaks : pandas.DataFrame
+        :meth:`flowfreq.usgs.USGSgage.download_peak_flow` output.
+    daily : pandas.DataFrame, optional
+        The daily record, for the event-count trend (:func:`event_counts`).
+
+    Returns
+    -------
+    dict
+        ``markdown`` (str) and ``png`` (bytes), or ``{"error": msg}`` when the screen
+        cannot run (fewer than ten peaks).
+    """
+    import matplotlib.pyplot as plt
+
+    values, codes, log = _peak_series(peaks)
+    title = f"USGS {site_no} {name}".strip() + ": annual peaks"
+    try:
+        report = stationarity_report(
+            values,
+            log=log,
+            alpha=SCREEN_ALPHA,
+            peak_codes=codes,
+            pot=event_counts(daily),
+            title=title,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    buffer = io.BytesIO()
+    report.figure.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+    plt.close(report.figure)
+    return {"markdown": report.markdown, "png": buffer.getvalue()}
+
+
+def _report_downloads(site_no: str, name: str, peaks: pd.DataFrame, daily: Any) -> None:
+    frame = daily.get("daily") if isinstance(daily, dict) else None
+    files = report_files(site_no, name, peaks, frame)
+    if "error" in files:
+        return
+    cols = st.columns(3)
+    cols[0].download_button(
+        "Stationarity report (Markdown)",
+        files["markdown"],
+        file_name=f"{site_no}_stationarity.md",
+        mime="text/markdown",
+    )
+    cols[1].download_button(
+        "Stationarity figure (PNG)",
+        files["png"],
+        file_name=f"{site_no}_stationarity.png",
+        mime="image/png",
+    )
 
 
 def stationarity_section(screen: Dict[str, Any]) -> None:
@@ -781,6 +981,7 @@ def render(site_no: str) -> None:
     st.subheader("Period of record")
     st.table(_record_frame(info, summary))
     _daily_section(daily, peaks.get("peaks"))
+    _regime_section(daily)
     if "error" in peaks:
         st.warning(peaks["error"])
     else:
@@ -793,13 +994,13 @@ def render(site_no: str) -> None:
             "page."
         )
         stationarity_section(screen)
+        _report_downloads(site_no, info["name"], peaks["peaks"], daily)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
     with st.expander("Coming to this page"):
         st.markdown(
-            "- Summary hydrograph (daily percentiles by day of year) and flow-duration curve\n"
             "- Raster hydrograph (day of year by year)\n"
             "- The Bulletin 17C frequency curve in place, without leaving the page\n"
-            "- Provisional and approved days told apart on the daily chart"
+            "- Dams and land-cover change in the basin beside a change point"
         )
