@@ -300,6 +300,9 @@ class TestSkewSource:
         assert spy.calls[0]["regional_skew"] == 0.1
         assert spy.calls[0]["regional_skew_se"] == 0.3
 
+    def test_fallback_is_offered_as_nationwide(self, app_module):
+        assert app_module.SKEW_SOURCE_FALLBACK.startswith("Nationwide (")
+
     def test_unsourced_fallback_is_explicit(self, app_module, monkeypatch):
         spy = _RunFfaSpy()
         monkeypatch.setattr(app_module, "run_ffa", spy)
@@ -419,7 +422,7 @@ class TestRegulationScreen:
             "01426500", app_module._ffa_error("classified regulated", kind="regulated")
         )
         assert shown[0][0] == "error" and "classified regulated" in shown[0][1]
-        assert "Analyze anyway (regulated gage)" in shown[1][1]
+        assert "Analyze regulated gage" in shown[1][1]
 
     def test_errors_display_with_the_gage_not_only_during_download(self, app_module):
         """Download-loop messages are wiped by st.rerun(); the display loop must show them."""
@@ -464,6 +467,8 @@ class TestComparisonExportFiltersErrors:
     "params, page",
     [
         ({"page": "ungaged"}, "Ungaged site"),
+        ({"page": "flowfrequency"}, "Flow Frequency"),
+        ({"page": "gaged"}, "Flow Frequency"),  # the old name still lands
         ({"page": "gage", "site": "12358500"}, "Gage"),
         ({"page": "nope"}, None),
         ({}, None),
@@ -537,7 +542,7 @@ def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
     at.number_input(key="ungaged_lon").set_value(-113.99)
     at.run()
     # Streamlit drops the state of widgets a run does not draw, as on the Gaged page.
-    at.sidebar.radio[0].set_value("Gaged site")
+    at.sidebar.radio[0].set_value("Flow Frequency")
     at.run()
     at.sidebar.radio[0].set_value("Ungaged site")
     at.run()
@@ -559,20 +564,17 @@ def test_no_run_flag_no_automatic_download(app_module):
     assert not app_module.auto_run_requested({"run": "yes"}, {})
 
 
-def test_fit_provenance_shows_the_stationarity_screen(app_module, monkeypatch):
-    import gage_ui
+def test_flow_frequency_page_defaults_to_a_log_y_axis():
+    at = _app_with({})
+    scale = next(r for r in at.sidebar.radio if r.label == "Y-Axis Scale")
+    assert scale.value == "Log"
+    scale.set_value("Per Plot").run()
+    boxes = [c for c in at.sidebar.checkbox if c.label.startswith("Log: ")]
+    assert len(boxes) == 5 and all(c.value for c in boxes)
 
-    shown = []
-    monkeypatch.setattr(gage_ui, "stationarity_section", shown.append)
-    screen = {"n": 40, "years": (1960, 1999), "flags": ["decreasing trend (p = 0.001)"]}
-    app_module.show_fit_provenance({"parameters": {}, "stationarity": screen})
-    assert shown == [screen]
 
-
-def test_fit_provenance_without_a_screen_shows_none(app_module, monkeypatch):
-    import gage_ui
-
-    shown = []
-    monkeypatch.setattr(gage_ui, "stationarity_section", shown.append)
-    app_module.show_fit_provenance({"parameters": {}, "stationarity": None})
-    assert shown == []
+def test_flow_frequency_results_show_the_stationarity_screen(app_module):
+    """run_ffa's screen of the fitted peaks is drawn with the Bulletin 17C results."""
+    source = " ".join(_source(app_module).split())
+    block = source.split('with st.expander("Flood Frequency Results"')[0]
+    assert 'gage_ui.stationarity_section(ffa_result["stationarity"])' in block

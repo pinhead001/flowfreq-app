@@ -51,7 +51,7 @@ def format_parameters_df(params: dict) -> pd.DataFrame:
 #: and a custom value typed in; the app records which in ``skew_note``.
 SKEW_SOURCE_LABELS = {
     "user": "Regional (supplied)",
-    "default": "Unsourced fallback -0.302",
+    "default": "Nationwide -0.302 (no located source)",
     "station": "Station skew only",
 }
 

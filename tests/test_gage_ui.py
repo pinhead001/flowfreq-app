@@ -223,7 +223,7 @@ def test_b17c_link_opens_the_gaged_page_in_a_new_window(monkeypatch):
     # A link button (target _blank), so the gage page stays open beside the analysis. The
     # new window is a new session: the site travels in the URL, not in session state.
     link = _b17c(_run(monkeypatch))
-    assert link.url == f"?page=gaged&site={SITE}&run=1"  # and run it on arrival
+    assert link.url == f"?page=flowfrequency&site={SITE}&run=1"  # and run it on arrival
     assert not link.disabled
 
 
@@ -265,7 +265,9 @@ def test_page_plots_the_daily_record(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert any("Daily mean flow" in h.value for h in at.subheader)
-    assert len(_charts(at)) == 2  # daily record, annual peaks
+    assert len(_charts(at)) == 1  # annual peaks
+    # The daily record, in the resizable-brush component (vega_component).
+    assert len(at.get("component_instance")) == 1
 
 
 def test_page_without_daily_values_says_so(monkeypatch):
@@ -435,6 +437,22 @@ def test_a_quick_period_opens_the_chart_zoomed():
     domain = _line(spec)["encoding"]["x"]["scale"]["domain"]["expr"]
     first, last = (int(t.value // 10**6) for t in window)
     assert domain.endswith(f"[{first}, {last}]")
+    # ... and as a box on the strip, whose ends can then be dragged.
+    start, end = _param(spec, "period")["value"]["x"]
+    assert (start["year"], start["month"], start["date"]) == (1929, 3, 2)
+    assert (end["year"], end["month"], end["date"]) == (1929, 3, 4)
+
+
+def test_without_a_quick_period_the_strip_starts_with_no_box():
+    assert "value" not in _param(gage_ui.daily_chart(DAILY).to_dict(), "period")
+
+
+def test_the_daily_chart_is_drawn_with_resizable_period_grips(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(gage_ui, "vega_chart", lambda chart, **kw: seen.update(kw, chart=chart))
+    gage_ui._daily_section({"daily": DAILY}, None)
+    assert seen["resizable"] == ["period"]
+    assert _param(seen["chart"].to_dict(), "period")["select"]["type"] == "interval"
 
 
 def test_csv_of_the_daily_values():
@@ -627,10 +645,6 @@ def test_page_says_why_a_short_record_was_not_screened(monkeypatch):
     assert any("Stationarity screen not run" in c.value for c in at.caption)
 
 
-def _ms_text(day):
-    return str(int(pd.Timestamp(day).value // 10**6))
-
-
 def test_axis_reads_months_over_a_year_and_water_years_over_a_decade():
     daily = pd.DataFrame(
         {"flow_cfs": 1.0}, index=pd.date_range("2019-07-01", "2022-02-01", name="date")
@@ -640,11 +654,14 @@ def test_axis_reads_months_over_a_year_and_water_years_over_a_decade():
     two_years, fifteen = str(2 * 365.25 * 86400000), str(15 * 365.25 * 86400000)
     assert two_years in values and fifteen in values  # chosen by the span in view
     assert "period.date" in values
-    assert _ms_text("2020-11-01") in values  # month starts, up to two years in view
-    assert _ms_text("2021-04-01") in values  # mid water year, up to fifteen
-    assert "utcFormat(datum.value, '%b')" in label  # "Oct", "Nov" ...
-    assert "utcFormat(datum.value, '%b %Y')" in label  # ... "Jan 2021"
-    assert "'WY ' + utcyear(datum.value)" in label  # April 1 2021 is in WY 2021
+    # Ticks are local midnights, built in the browser, as Vega reads the dates and the
+    # brush works in local time: a UTC tick at Oct 1 falls outside a brushed water year.
+    assert "datetime(2020, 10, 1)" in values  # 1 November 2020: month starts, up to two years
+    assert "datetime(2021, 3, 1)" in values  # 1 April 2021: mid water year, up to fifteen
+    assert "timeFormat(datum.value, '%b')" in label  # "Oct", "Nov" ...
+    assert "timeFormat(datum.value, '%b %Y')" in label  # ... "Jan 2021"
+    assert "'WY ' + year(datum.value)" in label  # April 1 2021 is in WY 2021
+    assert "utc" not in label + values
     assert label.endswith("datum.label")  # longer spans keep the "%b %Y" format
     assert two_years in axis["gridOpacity"]["expr"]  # no grid line mid water year
 

@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 SKEW_SOURCE_PUBLISHED = "Published regional study"
 SKEW_SOURCE_STATION = "Station skew only"
 SKEW_SOURCE_CUSTOM = "Custom value"
-SKEW_SOURCE_FALLBACK = f"Unsourced fallback ({B17C_DEFAULT_SKEW})"
+SKEW_SOURCE_FALLBACK = f"Nationwide ({B17C_DEFAULT_SKEW})"
 SKEW_SOURCE_CHOICES = (
     SKEW_SOURCE_PUBLISHED,
     SKEW_SOURCE_STATION,
@@ -286,7 +286,7 @@ def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
     if kind == "regulated":
         st.error(f"Flood frequency analysis refused for USGS {site_no}: {message}")
         st.info(
-            "To fit it anyway, tick **Analyze anyway (regulated gage)** under Flood "
+            "To fit it anyway, tick **Analyze regulated gage** under Flood "
             "Frequency Analysis in the sidebar, then click Update Plots (or download again)."
         )
     elif kind == "skew":
@@ -296,7 +296,7 @@ def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
 
 
 def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
-    """Skew source, peak codes applied, regulation and stationarity screens for a fitted gage."""
+    """Skew source, peak codes applied and regulation screen for a fitted gage."""
     params = ffa_result.get("parameters", {})
     info = ffa_result.get("skew_info") or {}
     source = params.get("regional_skew_source")
@@ -305,7 +305,8 @@ def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
         st.write("Station skew only -- no regional weighting.")
     elif source == "default":
         st.warning(
-            f"Unsourced fallback skew {B17C_DEFAULT_SKEW} (SE {B17C_DEFAULT_SKEW_SE}). "
+            f"Nationwide skew {B17C_DEFAULT_SKEW} (SE {B17C_DEFAULT_SKEW_SE}), which has no "
+            "located source. "
             "It has no located source and is not a Bulletin 17C value."
         )
     else:
@@ -338,10 +339,6 @@ def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
         for reason in site_class.get("basis") or []:
             st.caption(reason)
 
-    screen = ffa_result.get("stationarity")
-    if screen:
-        gage_ui.stationarity_section(screen)
-
 
 def _configure_api_key() -> None:
     """Pass a Water Data API key from Streamlit secrets to flowfreq, if one is set.
@@ -368,10 +365,16 @@ st.set_page_config(
     layout="wide",
 )
 
-PAGE_GAGED = "Gaged site"
+PAGE_GAGED = "Flow Frequency"
 PAGE_UNGAGED = "Ungaged site"
 PAGE_GAGE = "Gage"
-_PAGE_PARAMS = {"gaged": PAGE_GAGED, "ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+# ?page=gaged is the Flow Frequency page's old name, kept so older links still land.
+_PAGE_PARAMS = {
+    "flowfrequency": PAGE_GAGED,
+    "gaged": PAGE_GAGED,
+    "ungaged": PAGE_UNGAGED,
+    "gage": PAGE_GAGE,
+}
 _SITE_RE = re.compile(r"\d{8,15}")
 
 
@@ -429,7 +432,7 @@ if page == PAGE_UNGAGED:
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 
-# The Gaged page. The map and gage pages above carry their own headers.
+# The Flow Frequency page. The map and gage pages above carry their own headers.
 st.title("USGS Hydrograph-erator")
 st.markdown(
     "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
@@ -453,7 +456,7 @@ st.sidebar.header("Input Parameters")
 input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
-    # A gage page's "Run Bulletin 17C" link arrives as ?page=gaged&site=NNNNNNNN.
+    # A gage page's "Run Bulletin 17C" link arrives as ?page=flowfrequency&site=NNNNNNNN.
     default_gage = linked_site if requested == PAGE_GAGED and linked_site else "12358500"
     gage_input = st.sidebar.text_input("USGS Gage Number", value=default_gage)
     gage_list = [gage_input.strip()] if gage_input else []
@@ -475,22 +478,25 @@ show_summary = st.sidebar.checkbox("Summary Hydrograph", value=True)
 show_fdc = st.sidebar.checkbox("Flow Duration Curve", value=True)
 
 # Y-axis scale options
-scale_mode = st.sidebar.radio("Y-Axis Scale", ["Linear", "Log", "Per Plot"], horizontal=True)
+# Log by default: daily flows and flood quantiles both span orders of magnitude.
+scale_mode = st.sidebar.radio(
+    "Y-Axis Scale", ["Linear", "Log", "Per Plot"], index=1, horizontal=True
+)
 
 if scale_mode == "Per Plot":
     st.sidebar.markdown("**Scale per plot:**")
     yscale_timeseries = (
-        "log" if st.sidebar.checkbox("Log: Daily Time Series", value=False) else "linear"
+        "log" if st.sidebar.checkbox("Log: Daily Time Series", value=True) else "linear"
     )
     yscale_summary = (
-        "log" if st.sidebar.checkbox("Log: Summary Hydrograph", value=False) else "linear"
+        "log" if st.sidebar.checkbox("Log: Summary Hydrograph", value=True) else "linear"
     )
-    yscale_fdc = "log" if st.sidebar.checkbox("Log: Flow Duration Curve", value=False) else "linear"
+    yscale_fdc = "log" if st.sidebar.checkbox("Log: Flow Duration Curve", value=True) else "linear"
     yscale_freq = (
-        "log" if st.sidebar.checkbox("Log: Flood Frequency Curve", value=False) else "linear"
+        "log" if st.sidebar.checkbox("Log: Flood Frequency Curve", value=True) else "linear"
     )
     yscale_peak = (
-        "log" if st.sidebar.checkbox("Log: Peak Flow Time Series", value=False) else "linear"
+        "log" if st.sidebar.checkbox("Log: Peak Flow Time Series", value=True) else "linear"
     )
 else:
     yscale_timeseries = yscale_summary = yscale_fdc = yscale_freq = yscale_peak = scale_mode.lower()
@@ -554,7 +560,7 @@ if enable_ffa:
         ),
     )
     allow_regulated = st.sidebar.checkbox(
-        "Analyze anyway (regulated gage)",
+        "Analyze regulated gage",
         value=False,
         help=(
             "Gages classed regulated (GAGES-II dam storage, or peak code 6) are refused: "
@@ -1164,6 +1170,10 @@ if st.session_state.gage_data:
                     if on
                 ]
                 skew_tables = compute_skew_tables(ffa_result, selected_skew_labels)
+
+                # The library's screen of the peaks Bulletin 17C fitted (run_ffa).
+                if ffa_result.get("stationarity"):
+                    gage_ui.stationarity_section(ffa_result["stationarity"])
 
                 with st.expander("Flood Frequency Results", expanded=False):
                     # Show analysis year range

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Resizable period on the gage page; Flow Frequency page
+
+- **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
+  or shorten the period shown. Dragging the box still slides it, and double-click still
+  shows the whole record. A quick period (last year, 10 years ...) now opens as a box too,
+  so its ends can be dragged. The chart is drawn by `vega_component`, a build-less
+  vega-embed component (scripts from jsDelivr, pinned with SRI hashes). It patches the
+  compiled Vega-Lite to add a grip at each end of the brush, which Vega-Lite itself cannot
+  resize.
+- **Gaged page renamed Flow Frequency.** `?page=flowfrequency` opens it; the old
+  `?page=gaged` links still land there.
+- **Flow Frequency page:** the y axis defaults to log (the "Per Plot" boxes start ticked
+  too). The stationarity screen of the fitted peaks (`run_ffa`'s `stationarity`) is shown
+  with the Bulletin 17C results, as on the gage page.
+- Labels: the skew source *Unsourced fallback* is now *Nationwide (-0.302)* (still warned
+  as having no located source), and *Analyze anyway (regulated gage)* is now *Analyze
+  regulated gage*.
+
 ### Delineate without ss-hydro
 
 The map's *Delineate* uses `flowfreq.streamstats.delineate_watershed`: the polygon from
@@ -45,7 +63,6 @@ The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it add
 - **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show), coloured by qualification code; **Open in Bulletin 17C (Gaged page)**, which opens the Gaged page in a new window and runs the download and Bulletin 17C there on arrival (`?page=gaged&site=&run=1`, once per session), leaving the gage page open; links to the USGS pages; CSV downloads of the daily values (with their approval codes) and the annual peaks. Site, daily values and peaks download in parallel (1.2 s instead of 5.0 s for 12340500, cold).
 - **Daily mean flow chart** of the whole daily record: drag across the strip under it to zoom to a period of interest, drag the shaded box to move along the record, double-click to reset, or pick a quick period (whole record, last 10 years, last water year). Hovering reads out the day, its flow and its status (provisional, estimated, ice); provisional days are drawn in orange; annual peaks are red dots; dashed lines mark water years when under 15 years are in view; the flow axis fits the period in view. Log or linear from a switch inside the chart, so a zoomed period survives it. Missing days show as gaps. Lookups are cached for six hours and never raise: a failed or unknown site is reported on the page.
 - **Stationarity screen** of the annual peaks, under the peak chart (flowfreq v0.20.0's `stationarity_screen`, the same screen `run_ffa` attaches): trend, change-point and variability flags in plain language, with candidate causes from the peak codes ("change point in 1963 ... regulation or diversion (peak code 5/6)"), and a dashed line on the chart at a significant change point. A record that screens clean says so; one under ten peaks says why it was not screened. Information only: the Bulletin 17C fit is unchanged.
-- **Stationarity screen on the Gaged page** too, in each gage's Flood Frequency Results after the regulation screen: the screen `run_ffa` attaches to the fit, so it covers the peaks the fit used (the analysis year range, when one is set).
 - **Daily chart labels follow the span in view:** months up to two years ("Oct", "Nov", "Jan 2026"; *Last water year*), one "WY 2017" label per water year up to fifteen (*Last 10 years*), centred between the dashed water-year lines; the whole record keeps "Jan 1930". A brushed period of the same length labels the same way.
 
 ### Basin map on the Ungaged-site page

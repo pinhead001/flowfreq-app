@@ -69,9 +69,10 @@ class TestSkewSourceColumns:
         assert df["Regional Skew"].iloc[0] == "none"
         assert df["Skew Source"].iloc[0] == "Station skew only"
 
-    def test_fallback_is_labelled_unsourced(self):
+    def test_fallback_is_labelled_nationwide_and_unsourced(self):
         df = format_parameters_df({"regional_skew_source": "default"})
-        assert "Unsourced" in df["Skew Source"].iloc[0]
+        label = df["Skew Source"].iloc[0]
+        assert label.startswith("Nationwide") and "no located source" in label
 
     def test_mgbt_outliers_shown_beside_pilfs(self):
         df = format_parameters_df({"n_low_outliers": 4, "n_mgbt_outliers": 2})
