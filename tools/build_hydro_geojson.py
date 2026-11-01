@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -69,6 +70,109 @@ def real_name(name: Optional[str]) -> Optional[str]:
     if not name:
         return None
     return NAME_OVERRIDES.get(name, name)
+
+
+#: Last words that already say what a feature is ("Clear Creek", "Fort Peck Lake").
+_WATER_WORDS = frozenset(
+    "river creek wash canal bayou slough outlet draw kill run brook channel water lake "
+    "lakes reservoir pool pond dam bay sea sound".split()
+)
+#: First words that do the same, several in French or Spanish ("Lake Mead", "Rio Grande").
+_WATER_PREFIXES = frozenset(
+    "lake lac laguna lago presa rio río r riviere rivière arroyo bayou".split()
+)
+
+#: First words Natural Earth's ``name_full`` has lost a letter from (308 "Rivire", 4 "Ro").
+_REPAIRS = {"Rivire": "Rivière", "Ro": "Río"}
+
+
+def water_name(props: Dict[str, Any], kind: str) -> Optional[str]:
+    """The label for a river or lake: its full name, so Flathead Lake and the Flathead
+    River do not both read "Flathead".
+
+    Lakes use Natural Earth's ``name`` ("Flathead Lake", "Lake Mead"), not ``name_en``,
+    which drops the generic word. Rivers use the North America supplement's ``name_full``
+    where there is one, else ``name`` with "River" added. A river segment drawn through a
+    lake (``featurecla`` "Lake Centerline") gets no label, which would sit on the lake's.
+    A name that neither ends nor starts with a generic word gets "Lake" or "River" added
+    ("Double Mountain Fork Brazos" is a river; "Allan Water" already says so).
+    """
+    if kind == "river" and props.get("featurecla") == "Lake Centerline":
+        return None
+    raw = (props.get("name_full") if kind == "river" else None) or props.get("name")
+    parts = str(raw or props.get("name_en") or "").split()
+    if parts:
+        parts[0] = _REPAIRS.get(parts[0], parts[0])
+    name = real_name(" ".join(parts))
+    if not name:
+        return None
+    words = [w.strip(".,").lower() for w in name.split()]
+    if words[-1] in _WATER_WORDS or (len(words) > 1 and words[0] in _WATER_PREFIXES):
+        return name
+    return f"{name} {'Lake' if kind == 'lake' else 'River'}"
+
+
+#: Map abbreviations for the generic words of a name, used where the full name does not fit.
+_SHORT = {
+    "river": "R.", "lake": "L.", "reservoir": "Res.", "creek": "Cr.", "fork": "Fk.",
+    "branch": "Br.", "north": "N.", "south": "S.", "east": "E.", "west": "W.",
+    "middle": "Mid.", "saint": "St.", "riviere": "R.", "rivière": "R.",
+}  # fmt: skip
+
+
+def short_name(name: str) -> str:
+    """The name with its generic words abbreviated: "South Fork Flathead River" ->
+    "S. Fk. Flathead R."."""
+    return " ".join(_SHORT.get(word.lower(), word) for word in name.split())
+
+
+#: Label font sizes in the map (``waterLabelLayers`` in ``index.html``), pixels.
+_FONT_PX = {"lake": 11.0, "river": 10.5}
+#: Average glyph width of Noto Sans Italic, in ems.
+_CHAR_EM = 0.55
+#: Lake labels wrap at this many ems (``text-max-width``).
+_LAKE_WRAP_EM = 7.0
+
+
+def _span(path: Sequence[Sequence[float]]) -> float:
+    """Length of a path in degrees of latitude (longitude scaled by cos latitude)."""
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(path, path[1:]):
+        dx = (x2 - x1) * math.cos(math.radians((y1 + y2) / 2))
+        total += math.hypot(dx, y2 - y1)
+    return total
+
+
+def _room(geometry: Dict[str, Any], kind: str) -> float:
+    """The room a label has, in degrees of latitude: a lake's east-west width (labels are
+    horizontal), or the length of a river's longest part (labels follow one line)."""
+    coords, gtype = geometry["coordinates"], geometry["type"]
+    if kind == "river":
+        lines = [coords] if gtype == "LineString" else coords
+        return max((_span(line) for line in lines), default=0.0)
+    polys = [coords] if gtype == "Polygon" else coords
+    best = 0.0
+    for poly in polys:
+        xs, ys = [p[0] for p in poly[0]], [p[1] for p in poly[0]]
+        width = (max(xs) - min(xs)) * math.cos(math.radians((max(ys) + min(ys)) / 2))
+        best = max(best, width)
+    return best
+
+
+def full_name_zoom(name: str, geometry: Dict[str, Any], kind: str) -> float:
+    """The zoom from which ``name`` fits the feature; below it the map shows the short name.
+
+    An estimate: the label's width from its length in characters, against the feature's
+    room (:func:`_room`) at 512-pixel tiles.
+    """
+    em = _FONT_PX[kind]
+    width = len(name) * _CHAR_EM * em
+    if kind == "lake":
+        width = min(width, _LAKE_WRAP_EM * em)
+    room = _room(geometry, kind)
+    if room <= 0:
+        return 24.0
+    return round(min(24.0, max(0.0, math.log2(width * 360 / (512 * room)))), 1)
 
 
 def _vertices(coords: Any) -> Iterator[Sequence[float]]:
@@ -204,9 +308,13 @@ def _water(features: List[Dict[str, Any]], kind: str) -> List[Dict[str, Any]]:
             "rank": int(_number(p.get("scalerank"), 10)),
             "minz": _number(p.get("min_zoom"), 0),
         }
-        name = real_name(p.get("name_en") or p.get("name"))
+        name = water_name(p, kind)
         if name:
             props["name"] = name
+            short = short_name(name)
+            if short != name:
+                props["short"] = short
+                props["fullz"] = float(full_name_zoom(name, geometry, kind))
             props["labelz"] = _number(p.get("min_label"), props["minz"] + 1)
         kept.append({"type": "Feature", "properties": props, "geometry": round_geometry(geometry)})
     return kept

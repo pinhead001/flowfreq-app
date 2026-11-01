@@ -544,3 +544,16 @@ def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
     assert not at.exception
     assert at.number_input(key="ungaged_lat").value == 46.87
     assert at.number_input(key="ungaged_lon").value == -113.99
+
+
+def test_a_hand_off_with_run_starts_the_download_once(app_module):
+    # The gage page's Bulletin 17C link carries run=1: the new window downloads and runs
+    # the analysis on arrival, once; later reruns wait for the button as usual.
+    state = {}
+    assert app_module.auto_run_requested({"run": "1"}, state)
+    assert not app_module.auto_run_requested({"run": "1"}, state)
+
+
+def test_no_run_flag_no_automatic_download(app_module):
+    assert not app_module.auto_run_requested({}, {})
+    assert not app_module.auto_run_requested({"run": "yes"}, {})

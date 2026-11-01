@@ -66,4 +66,14 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   `delineate_and_get_characteristics`, which always calls `ss-hydro` for characteristics
   although the polygon comes from `ss-delineate`. A polygon-only path in flowfreq would make
   Delineate faster and immune to `ss-hydro` outages like the one above. Library work.
-- **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. v1 (site summary, periods of record, annual-peak chart, Bulletin 17C handoff) is in `gage_ui.py`.
+- **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window.
+- **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
+  in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,
+  provisional days in orange, parallel loading, `run=1` auto-run on the Gaged page).
+  Left over:
+  - The log/linear switch is Vega's plain radio input, unstyled; a quick period resets it
+    to log (it is a rerun).
+  - Streamlit ignores a selection's starting value, so a quick period zooms the view
+    without drawing the shaded box on the strip.
+  - `st.altair_chart(use_container_width=...)` warns on Streamlit 1.63 (use `width=`); moving
+    to `width="stretch"` needs the floor raised from 1.40. The app's other charts use it too.

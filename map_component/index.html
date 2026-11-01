@@ -610,14 +610,25 @@ function waterLayers(source) {
   ];
 }
 
+// The full name ("Flathead River") from the zoom it fits its feature (fullz, measured by
+// tools/build_hydro_geojson.py), the short one ("Flathead R.") below. A style may use
+// ["zoom"] only as the input of a top-level step, hence one case per half zoom.
+const FITTED_NAME = (() => {
+  const pick = (z) => ["case", ["<=", ["coalesce", ["get", "fullz"], 0], z],
+    ["get", "name"], ["coalesce", ["get", "short"], ["get", "name"]]];
+  const expr = ["step", ["zoom"], pick(0)];
+  for (let z = 0.5; z <= 12; z += 0.5) expr.push(z, pick(z));
+  return expr;
+})();
+
 function waterLabelLayers(source) {
   const named = (kind) => ["all", ["==", ["get", "kind"], kind], ["has", "name"], shown("labelz")];
   return [
     { id: `${source}-lake-names`, type: "symbol", source, maxzoom: 12, filter: named("lake"),
-      layout: { "text-field": ["get", "name"], "text-font": WATER_FONT, "text-size": 11,
+      layout: { "text-field": FITTED_NAME, "text-font": WATER_FONT, "text-size": 11,
                 "text-max-width": 7 } },
     { id: `${source}-river-names`, type: "symbol", source, maxzoom: 12, filter: named("river"),
-      layout: { "symbol-placement": "line", "text-field": ["get", "name"], "text-font": WATER_FONT,
+      layout: { "symbol-placement": "line", "text-field": FITTED_NAME, "text-font": WATER_FONT,
                 "text-size": 10.5, "symbol-spacing": 400 } },
   ];
 }

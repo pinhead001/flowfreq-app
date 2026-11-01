@@ -10,7 +10,7 @@ import os
 import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -380,6 +380,23 @@ def requested_page(params: Mapping[str, str]) -> Optional[str]:
     return _PAGE_PARAMS.get(params.get("page", ""))
 
 
+def auto_run_requested(params: Mapping[str, str], state: MutableMapping[str, Any]) -> bool:
+    """Whether to press Download Data on the user's behalf: once per session, for a link
+    carrying ``run=1`` (the gage page's Bulletin 17C link).
+
+    Parameters
+    ----------
+    params : mapping
+        The query parameters.
+    state : mutable mapping
+        Session state; remembers that the run happened, so later reruns wait for the button.
+    """
+    if params.get("run") != "1" or state.get("_auto_ran"):
+        return False
+    state["_auto_ran"] = True
+    return True
+
+
 requested = requested_page(st.query_params)
 # A site number from the URL (?site=), checked before it reaches any page or markdown.
 linked_site = st.query_params.get("site", "")
@@ -415,7 +432,11 @@ st.markdown(
 )
 # Arrived from a gage page's "Open in Bulletin 17C" button.
 handed_off = requested == PAGE_GAGED and bool(linked_site)
-if handed_off:
+# With run=1 the link also asks for the download and analysis to start on arrival.
+auto_run = handed_off and auto_run_requested(st.query_params, st.session_state)
+if auto_run:
+    st.info(f"Downloading site {linked_site} and running Bulletin 17C.")
+elif handed_off and not st.session_state.get("_auto_ran"):
     st.info(
         f"Site {linked_site} is filled in and flood frequency analysis is ticked. Press "
         "**Download Data** in the sidebar to run Bulletin 17C."
@@ -589,7 +610,7 @@ else:
     pilf_override = 0.0
 
 # Download button
-download_data = st.sidebar.button("Download Data", type="primary")
+download_data = st.sidebar.button("Download Data", type="primary") or auto_run
 st.sidebar.caption(
     "Data: USGS Water Data API. Without a key it allows 1,000 requests/hour per IP; "
     f"set `{API_KEY_ENV}` (environment or Streamlit secrets) to raise the limit. "

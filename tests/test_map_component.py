@@ -270,3 +270,14 @@ def test_identity_cache_survives_concurrent_eviction():
     with ThreadPoolExecutor(8) as pool:
         results = list(pool.map(lambda o: cache.get(o, lambda x: x["i"]), objs))
     assert results == list(range(400))
+
+
+def test_water_names_have_a_short_form_and_the_zoom_the_full_one_fits():
+    # The build measures each label against its feature; the map shows "Flathead R." until
+    # the zoom from which "Flathead River" fits.
+    for name in ("water_base.geojson", "water_detail.geojson"):
+        features = json.loads((ROOT / name).read_text(encoding="utf-8"))["features"]
+        shortened = [f["properties"] for f in features if "short" in f["properties"]]
+        assert shortened, name
+        assert all(isinstance(p.get("fullz"), (int, float)) for p in shortened)
+    assert '["get", "fullz"]' in HTML and '["get", "short"]' in HTML
