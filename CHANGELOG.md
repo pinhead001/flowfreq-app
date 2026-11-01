@@ -15,8 +15,20 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 - a basin StreamStats flags regulated: choose a point upstream of the dam or diversion;
 - a state StreamStats does not delineate (FL, MI, NE): no point there can be delineated.
 
-The library's own message is kept as the outcome's `detail`. Needs the flowfreq v0.20.0 pin
-(`RegionNotDelineatedError`, `RegulatedDelineationError`).
+The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
+`RegionNotDelineatedError` and `RegulatedDelineationError`.
+
+### flowfreq v0.20.0
+
+The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it adds for the app:
+- `run_ffa` results carry `stationarity`, the trend and change-point screen of the annual
+  peaks (plain-language `flags`); the app does not show it yet.
+- StreamStats failures no pour point can fix are their own errors:
+  `RegionNotDelineatedError` (FL, MI and NE have no stream grid) and
+  `RegulatedDelineationError` (a basin StreamStats flags regulated). Both are `ValueError`s,
+  so the current handlers still catch them.
+- Alaska ungaged estimates no longer need a region choice (the two statewide drainage-area
+  classes are chosen by drainage area).
 
 ### Gage page
 
