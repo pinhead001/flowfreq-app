@@ -73,3 +73,10 @@ def test_the_grips_patch_names_vega_lites_brush_signals():
         "ew-resize",
     ):
         assert needle in HTML, needle
+
+
+def test_dark_mode_draws_the_period_box_in_red():
+    """The grey brush and blue grips disappear on a dark page and the blue strip."""
+    assert 'dark: "#ff4b4b"' in HTML
+    assert 'theme.base === "dark"' in HTML
+    assert "`${name}_brush_bg`" in HTML  # Vega-Lite's box fill, recoloured with the outline

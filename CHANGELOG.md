@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Gage page: period box in red in dark mode
+
+Vega-Lite's grey brush and the blue grips disappeared against a dark page and the blue strip; in dark mode both are now red (`#ff4b4b`), and switching theme redraws the chart.
+
 ### Resizable period on the gage page; Flow Frequency page
 
 - **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
