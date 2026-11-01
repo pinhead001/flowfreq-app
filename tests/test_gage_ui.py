@@ -546,3 +546,82 @@ def test_the_readout_sits_in_a_fixed_corner():
     spec = gage_ui.daily_chart(DAILY).to_dict()
     (readout,) = [v for v in _layers(spec) if _mark(v) == "text"]
     assert "value" in readout["encoding"]["x"] and "value" in readout["encoding"]["y"]
+
+
+_YEARS = list(range(1960, 2000))
+_WIGGLE = [1.00, 1.08, 0.93, 1.05, 0.97, 1.11, 0.90, 1.03, 0.95, 1.07]
+STEPPED = pd.DataFrame(  # a dam in 1980: peaks fall to a third
+    {
+        "water_year": _YEARS,
+        "peak_date": pd.to_datetime([f"{y}-05-15" for y in _YEARS]),
+        "peak_flow_cfs": [
+            (12000 if y < 1980 else 4000) * _WIGGLE[i % 10] for i, y in enumerate(_YEARS)
+        ],
+        "qualification_code": ["" if y < 1980 else "6" for y in _YEARS],
+    }
+)
+STATIONARY = STEPPED.assign(
+    peak_flow_cfs=[12000 * _WIGGLE[(i * 7) % 10] for i in range(len(_YEARS))],
+    qualification_code="",
+)
+
+
+def test_screen_flags_a_stepped_record():
+    screen = gage_ui.screen_peaks(STEPPED)
+    assert any("change point in 19" in f for f in screen["flags"])
+    assert any("peak code 5/6" in f for f in screen["flags"])  # the codes reach the screen
+    assert gage_ui.change_year(screen) in range(1978, 1983)
+
+
+def test_screen_of_a_stationary_record_has_no_flags():
+    screen = gage_ui.screen_peaks(STATIONARY)
+    assert screen["flags"] == []
+    assert gage_ui.change_year(screen) is None
+
+
+def test_screen_of_a_short_record_says_why_and_never_raises():
+    screen = gage_ui.screen_peaks(PEAKS)
+    assert "10" in screen["error"]
+    assert gage_ui.change_year(screen) is None
+
+
+def test_screen_tolerates_zero_and_missing_peaks():
+    peaks = STATIONARY.copy()
+    peaks.loc[3, "peak_flow_cfs"] = 0.0
+    peaks.loc[5, "peak_flow_cfs"] = float("nan")
+    assert "flags" in gage_ui.screen_peaks(peaks)  # tested in linear units, not refused
+
+
+def test_peak_chart_marks_the_change_point():
+    spec = gage_ui.peak_chart(STEPPED, change_year=1980).to_dict()
+    marks = [layer["mark"]["type"] for layer in spec["layer"]]
+    assert "rule" in marks and "text" in marks
+    rule = spec["layer"][marks.index("rule")]
+    assert rule["encoding"]["x"]["datum"] == 1980
+
+
+def test_peak_chart_without_a_change_point_has_no_marker():
+    assert "layer" not in gage_ui.peak_chart(STEPPED).to_dict()
+
+
+def test_page_shows_the_stationarity_flags(monkeypatch):
+    at = _run(monkeypatch, peaks=STEPPED)
+    assert not at.exception
+    flagged = [w.value for w in at.warning if "Stationarity screen" in w.value]
+    assert flagged and "Change point in 19" in flagged[0]
+    assert any("does not change" in c.value for c in at.caption)
+
+
+def test_page_says_when_the_record_screens_clean(monkeypatch):
+    at = _run(monkeypatch, peaks=STATIONARY)
+    assert not at.exception
+    assert any(
+        "no significant trend" in c.value and "40 annual peaks, 1960–1999" in c.value
+        for c in at.caption
+    )
+
+
+def test_page_says_why_a_short_record_was_not_screened(monkeypatch):
+    at = _run(monkeypatch)
+    assert not at.exception
+    assert any("Stationarity screen not run" in c.value for c in at.caption)
