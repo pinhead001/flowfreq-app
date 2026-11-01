@@ -28,32 +28,36 @@ One PR per phase, in this order. The follow-up entries below hold the detail.
    menu over gages, orb snaps back when Python rejects a click, one warning per malformed
    event, gage placeholder with a way back and a validated `site`, CLAUDE.md layout, the
    states build script checks its record limit and feature count.
-2. **Real water-body names** (spike first). Find a label-free hydro source that keeps
+2. **Real water-body names** (done 2026-10-31, branch `feat/water-names`). Find a label-free hydro source that keeps
    scale-dependent rivers and HUCs, then label water bodies ourselves.
-3. **Library delineate-only call** (flowfreq, next release). Polygon from `ss-delineate`
+3. **Library delineate-only call** (flowfreq PR #261 open; the app adopts it after the release that tags it). Polygon from `ss-delineate`
    without `ss-hydro`; the app's Delineate adopts it after the pin bump.
-4. **New features**, each with its own spec, plan and PR: the gage page (Spec 2), then
-   cross-state comparison (option B), then the skew-region overlay (spike on HUC geometry
+4. **New features**: the gage page (v1 done 2026-10-31, branch `feat/gage-page`), cross-state
+   comparison (option B, done 2026-10-31, branch `feat/review-polish`), then the skew-region overlay (spike on HUC geometry
    from the WBD service).
 
 Outstanding outside the phases: the live Delineate/Estimate check once StreamStats is up.
 
+## From the second review (2026-10-31), not yet done
+
+- **Browser Back after an in-app page switch** leaves the URL and the page out of step until a
+  refresh (Streamlit does not rerun on popstate). Fix properly with `st.navigation`/`st.Page`.
+- **Sidebar page radio** recreates itself when the query params clear (its `index` flips);
+  give it a key and set it from `?page=` once. A prefilled `?page=gaged&site=` is lost on a
+  sidebar round trip.
+- **Self-host MapLibre and the glyphs** next to `index.html` (the JS now carries an SRI hash
+  and a load-failure message; the glyphs still come from MapLibre's demo server).
+- **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the
+  monitoring-location lookup). Library candidate: `USGSgage.peak_summary()`, which would also
+  move `summarize_peaks`/`record_years` out of the app (CLAUDE.md: numbers belong in flowfreq).
+- **Network errors** quote the service URL in full; fine for engineers, long on screen.
+
 ## Basin map follow-ups (spec: `docs/superpowers/specs/2026-10-30-basin-map-design.md`)
 
-- **Restore the real names "Gulf of Mexico" and the lake labelled "Lake America".** The
-  labels come baked into the USGS `USGSHydroCached` raster tiles, so map styling cannot
-  rename them. Options: a label-free hydro source (e.g. the NHD/WBD map services exported
-  without annotation) with our own labels from a vector or GeoJSON source, or a small
-  GeoJSON of corrected water-body labels drawn over a label-free layer.
-- **Option B, cross-state comparison.** When the delineated basin touches more than one
-  jurisdiction, run `estimate_at_site` once per state and show the results side by side
-  (tabs), so the two states' equations can be compared for the same basin. One
-  StreamStats call per state; the overlap chooser and downloads need to work per state.
-  The map ships with option A: default to the clicked state, one-click re-run for the
-  others.
-- **Skew-region overlay.** HUC fill coloured by Bulletin 17C regional-skew region from the
-  library's `regional_skew_hucs.csv`. Needs HUC geometry; only worth doing if that is
-  cheap (a small bundled file or a light service), otherwise drop.
+- **Skew-region overlay.** Spike 2026-10-31: feasible, not cheap. `regional_skew_hucs.csv` holds
+  536 member/exclude rows at HUC2, 4, 8, 10 and 12 with per-state validity; a build-time WBD
+  query per level plus simplification would give the polygons, but the rules must be drawn
+  exactly as `regional_skew_at_huc` applies them, or the map would mislead.
 - **Live re-check of Delineate/Estimate on the map.** StreamStats' `ss-hydro` returned 502
   everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
   seen end to end (the component draws an injected polygon correctly; the page shows the
@@ -62,7 +66,14 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   `delineate_and_get_characteristics`, which always calls `ss-hydro` for characteristics
   although the polygon comes from `ss-delineate`. A polygon-only path in flowfreq would make
   Delineate faster and immune to `ss-hydro` outages like the one above. Library work.
-- **Spec 2, the gage page.** `?page=gage&site=NNNNNNNN`, linked from the map's gage
-  popups: site header, period of record for daily and peak flows via
-  `flowfreq.waterdata`, "Run Bulletin 17C on this site", then summary hydrograph, raster
-  hydrograph and data-access links. Brainstorm after the map spec is approved.
+- **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window.
+- **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
+  in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,
+  provisional days in orange, parallel loading, `run=1` auto-run on the Gaged page).
+  Left over:
+  - The log/linear switch is Vega's plain radio input, unstyled; a quick period resets it
+    to log (it is a rerun).
+  - Streamlit ignores a selection's starting value, so a quick period zooms the view
+    without drawing the shaded box on the strip.
+  - `st.altair_chart(use_container_width=...)` warns on Streamlit 1.63 (use `width=`); moving
+    to `width="stretch"` needs the floor raised from 1.40. The app's other charts use it too.

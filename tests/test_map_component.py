@@ -77,7 +77,7 @@ def test_html_declares_all_three_actions():
 
 
 def test_html_gage_popup_links():
-    assert "?page=gage&site=" in HTML
+    assert 'textContent = "Gage page"' in HTML  # opens the app's gage page (see below)
     assert "https://waterdata.usgs.gov/monitoring-location/" in HTML
 
 
@@ -165,3 +165,119 @@ def test_html_fetches_states_once():
 def test_html_keeps_a_clicked_style_until_python_confirms_it():
     # A rerun already in flight carries the previous style; it must not undo the click.
     assert "pendingMode" in HTML
+
+
+# --- Phase 2: real water-body names -------------------------------------------------
+
+
+def test_html_drops_the_labelled_usgs_hydro_tiles():
+    # Their labels are baked in ("Gulf of America") and cannot be renamed.
+    assert "USGSHydroCached" not in HTML
+
+
+def test_html_exports_nhd_and_wbd_without_labels():
+    assert '"https://hydro.nationalmap.gov/arcgis/rest/services"' in HTML
+    assert "/MapServer/export?" in HTML
+    assert 'exportTiles("nhd",' in HTML and 'exportTiles("wbd",' in HTML
+    assert "showLabels: false" in HTML
+
+
+def test_html_labels_water_from_bundled_files():
+    for name in ("water_base.geojson", "water_detail.geojson", "water_labels.geojson"):
+        assert name in HTML
+        assert (ROOT / name).is_file()
+    assert re.search(r'glyphs: "https://[^"]+\{fontstack\}/\{range\}\.pbf"', HTML)
+
+
+def test_bundled_water_labels_use_real_names():
+    import json as _json
+
+    names = set()
+    for name in ("water_base.geojson", "water_detail.geojson", "water_labels.geojson"):
+        fc = _json.loads((ROOT / name).read_text(encoding="utf-8"))
+        names |= {f["properties"].get("name") for f in fc["features"]}
+    assert "Gulf of Mexico" in names
+    assert not any(n and n.endswith(" America") and n.startswith(("Gulf", "Lake")) for n in names)
+
+
+# --- Review polish -------------------------------------------------------------------
+
+
+def test_html_starts_with_the_attribution_collapsed():
+    # Expanded, the attribution bar covers labels along the bottom ("Gulf of Mexico").
+    assert "maplibregl-compact-show" in HTML
+
+
+def test_html_lightens_huc_lines_when_zoomed_out():
+    # HUC2 regions fill the CONUS view; they fade up to full strength by zoom 8.
+    assert "3, r.opacity * 0.45, 8, r.opacity" in HTML
+
+
+# --- Second review: map ---------------------------------------------------------------
+
+
+def test_html_gage_link_goes_through_python_not_top_navigation():
+    # The component iframe may not navigate the top window (no allow-top-navigation).
+    assert 'target = "_top"' not in HTML
+    assert 'action: "gage"' in HTML
+
+
+def test_html_reopens_at_the_last_view():
+    assert "args.view" in HTML
+
+
+def test_html_shows_progress_while_streamstats_works():
+    assert 'id="chip-busy"' in HTML
+
+
+def test_html_closes_popups_when_the_view_jumps_away():
+    assert "closePopups()" in HTML
+
+
+def test_html_brings_a_typed_point_into_view():
+    assert "easeTo" in HTML
+
+
+def test_html_guards_the_maplibre_load():
+    assert re.search(r'maplibre-gl\.js" integrity="sha384-[A-Za-z0-9+/=]+"', HTML)
+    assert "typeof maplibregl" in HTML
+
+
+def test_prepare_args_passes_the_view():
+    assert _args(view=(46.87, -113.99, 9.0))["view"] == [46.87, -113.99, 9.0]
+    assert _args()["view"] is None
+
+
+def test_identity_cache_is_bounded_and_keyed_by_object():
+    cache = map_component.IdentityCache(maxsize=2)
+    a, b, c = {"n": 1}, {"n": 2}, {"n": 3}
+    calls = []
+    make = lambda obj: calls.append(obj) or obj["n"] * 10  # noqa: E731
+    assert cache.get(a, make) == 10 and cache.get(a, make) == 10
+    assert len(calls) == 1
+    cache.get(b, make)
+    cache.get(c, make)  # evicts a
+    cache.get(a, make)
+    assert len(calls) == 4
+    assert cache.get({"n": 1}, make) == 10 and len(calls) == 5  # equal is not the same object
+
+
+def test_identity_cache_survives_concurrent_eviction():
+    from concurrent.futures import ThreadPoolExecutor
+
+    cache = map_component.IdentityCache(maxsize=4)
+    objs = [{"i": i} for i in range(400)]
+    with ThreadPoolExecutor(8) as pool:
+        results = list(pool.map(lambda o: cache.get(o, lambda x: x["i"]), objs))
+    assert results == list(range(400))
+
+
+def test_water_names_have_a_short_form_and_the_zoom_the_full_one_fits():
+    # The build measures each label against its feature; the map shows "Flathead R." until
+    # the zoom from which "Flathead River" fits.
+    for name in ("water_base.geojson", "water_detail.geojson"):
+        features = json.loads((ROOT / name).read_text(encoding="utf-8"))["features"]
+        shortened = [f["properties"] for f in features if "short" in f["properties"]]
+        assert shortened, name
+        assert all(isinstance(p.get("fullz"), (int, float)) for p in shortened)
+    assert '["get", "fullz"]' in HTML and '["get", "short"]' in HTML

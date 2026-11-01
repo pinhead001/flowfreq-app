@@ -10,7 +10,7 @@ import os
 import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -38,6 +38,7 @@ from flowfreq.workflow import (
     run_ffa,
 )
 
+import gage_ui
 import ungaged_ui
 from ffa_export import export_comparison_csv, export_ffa_to_zip
 from ffa_runner import format_parameters_df, format_quantile_df, skew_source_label
@@ -363,15 +364,11 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("USGS Hydrograph-erator")
-st.markdown(
-    "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
-)
-
 PAGE_GAGED = "Gaged site"
 PAGE_UNGAGED = "Ungaged site"
 PAGE_GAGE = "Gage"
-_PAGE_PARAMS = {"ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+_PAGE_PARAMS = {"gaged": PAGE_GAGED, "ungaged": PAGE_UNGAGED, "gage": PAGE_GAGE}
+_SITE_RE = re.compile(r"\d{8,15}")
 
 
 def requested_page(params: Mapping[str, str]) -> Optional[str]:
@@ -383,21 +380,34 @@ def requested_page(params: Mapping[str, str]) -> Optional[str]:
     return _PAGE_PARAMS.get(params.get("page", ""))
 
 
+def auto_run_requested(params: Mapping[str, str], state: MutableMapping[str, Any]) -> bool:
+    """Whether to press Download Data on the user's behalf: once per session, for a link
+    carrying ``run=1`` (the gage page's Bulletin 17C link).
+
+    Parameters
+    ----------
+    params : mapping
+        The query parameters.
+    state : mutable mapping
+        Session state; remembers that the run happened, so later reruns wait for the button.
+    """
+    if params.get("run") != "1" or state.get("_auto_ran"):
+        return False
+    state["_auto_ran"] = True
+    return True
+
+
 requested = requested_page(st.query_params)
+# A site number from the URL (?site=), checked before it reaches any page or markdown.
+linked_site = st.query_params.get("site", "")
+linked_site = linked_site if _SITE_RE.fullmatch(linked_site) else ""
+
 if requested == PAGE_GAGE:
-    # Placeholder until the gage page exists (TODO.md, Spec 2). The site number comes from
-    # the URL, so it is checked before it reaches any markdown.
-    site = st.query_params.get("site", "")
-    st.markdown("[\u2190 Back to the map](?page=ungaged)")  # escaped: keep the source ASCII
-    if not re.fullmatch(r"\d{8,15}", site):
-        st.error("That is not a valid USGS site number (8 to 15 digits).")
+    if linked_site:
+        gage_ui.render(linked_site)
     else:
-        st.header(f"Gage {site}")
-        st.info(
-            "The gage page is coming: period of record for daily and peak flows, "
-            "Bulletin 17C, hydrographs. Meanwhile, see "
-            f"https://waterdata.usgs.gov/monitoring-location/{site}/"
-        )
+        gage_ui.back_button()
+        st.error("That is not a valid USGS site number (8 to 15 digits).")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 
@@ -415,6 +425,23 @@ if page == PAGE_UNGAGED:
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 
+# The Gaged page. The map and gage pages above carry their own headers.
+st.title("USGS Hydrograph-erator")
+st.markdown(
+    "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
+)
+# Arrived from a gage page's "Open in Bulletin 17C" button.
+handed_off = requested == PAGE_GAGED and bool(linked_site)
+# With run=1 the link also asks for the download and analysis to start on arrival.
+auto_run = handed_off and auto_run_requested(st.query_params, st.session_state)
+if auto_run:
+    st.info(f"Downloading site {linked_site} and running Bulletin 17C.")
+elif handed_off and not st.session_state.get("_auto_ran"):
+    st.info(
+        f"Site {linked_site} is filled in and flood frequency analysis is ticked. Press "
+        "**Download Data** in the sidebar to run Bulletin 17C."
+    )
+
 # Sidebar inputs
 st.sidebar.header("Input Parameters")
 
@@ -422,7 +449,9 @@ st.sidebar.header("Input Parameters")
 input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
-    gage_input = st.sidebar.text_input("USGS Gage Number", value="12358500")
+    # A gage page's "Run Bulletin 17C" link arrives as ?page=gaged&site=NNNNNNNN.
+    default_gage = linked_site if requested == PAGE_GAGED and linked_site else "12358500"
+    gage_input = st.sidebar.text_input("USGS Gage Number", value=default_gage)
     gage_list = [gage_input.strip()] if gage_input else []
 else:
     gage_input = st.sidebar.text_area(
@@ -475,7 +504,7 @@ date_range_container = st.sidebar.container()
 # Flood Frequency Analysis section
 st.sidebar.markdown("---")
 st.sidebar.subheader("Flood Frequency Analysis")
-enable_ffa = st.sidebar.checkbox("Enable Flood Frequency Analysis", value=False)
+enable_ffa = st.sidebar.checkbox("Enable Flood Frequency Analysis", value=handed_off)
 if enable_ffa:
     skew_source = st.sidebar.radio(
         "Skew Source",
@@ -581,7 +610,7 @@ else:
     pilf_override = 0.0
 
 # Download button
-download_data = st.sidebar.button("Download Data", type="primary")
+download_data = st.sidebar.button("Download Data", type="primary") or auto_run
 st.sidebar.caption(
     "Data: USGS Water Data API. Without a key it allows 1,000 requests/hour per IP; "
     f"set `{API_KEY_ENV}` (environment or Streamlit secrets) to raise the limit. "

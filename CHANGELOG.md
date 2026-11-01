@@ -18,6 +18,11 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Needs the flowfreq v0.20.0 pin
 (`RegionNotDelineatedError`, `RegulatedDelineationError`).
 
+### Gage page
+
+- **New page** at `?page=gage&site=NNNNNNNN`, opened from the map's gage popups: the site's name, drainage area, state, HUC and location; periods of record for daily flow and annual peaks (with the largest peak); a chart of the annual peaks on a true water-year axis (gaps in the record show), coloured by qualification code; **Open in Bulletin 17C (Gaged page)**, which opens the Gaged page in a new window and runs the download and Bulletin 17C there on arrival (`?page=gaged&site=&run=1`, once per session), leaving the gage page open; links to the USGS pages; CSV downloads of the daily values (with their approval codes) and the annual peaks. Site, daily values and peaks download in parallel (1.2 s instead of 5.0 s for 12340500, cold).
+- **Daily mean flow chart** of the whole daily record: drag across the strip under it to zoom to a period of interest, drag the shaded box to move along the record, double-click to reset, or pick a quick period (whole record, last 10 years, last water year). Hovering reads out the day, its flow and its status (provisional, estimated, ice); provisional days are drawn in orange; annual peaks are red dots; dashed lines mark water years when under 15 years are in view; the flow axis fits the period in view. Log or linear from a switch inside the chart, so a zoomed period survives it. Missing days show as gaps. Lookups are cached for six hours and never raise: a failed or unknown site is reported on the page.
+
 ### Basin map on the Ungaged-site page
 
 Draws the delineated watershed from `SiteEstimate.basin_geojson` (flowfreq v0.18.0). The
@@ -28,12 +33,15 @@ Streamlit floor rises to 1.40 (`st.segmented_control`).
   banded grey shading, the early-USGS-DEM look), **Night** (city lights under blue-grey
   relief; the default under a dark theme) and **Green** (iridescent hillshade). The
   hillshade is computed in the browser from AWS Terrain Tiles.
-- Rivers and hydrologic units from USGS The National Map, more detail with zoom; state and
-  territory lines; an optional tint by equation coverage (verified / partial / snapshot).
+- Rivers, lakes and hydrologic units, more detail with zoom: Natural Earth rivers and lakes
+  (bundled, styled per mode) below zoom 10, USGS NHD streams from zoom 10, USGS WBD HUC2-HUC12
+  throughout, all without baked-in labels. Water bodies are labelled by the map itself with
+  their real names ("Gulf of Mexico"); `tools/build_hydro_geojson.py` holds the correction
+  list. Rivers and lakes carry their full names, so Flathead Lake and the Flathead River no
+  longer both read "Flathead"; where the full name does not fit its feature at the current zoom the map shows a short form ("Flathead R.", "L. Mead", "S. Fk. Flathead R."); names Natural Earth has damaged ("Rivire") are repaired. State and territory lines; an optional tint by equation coverage (verified / partial / snapshot).
 - **StreamStats StreamGrid** from zoom 13: the cells that will snap and delineate, with a
   chip naming states that have no grid.
-- **Streamgages** from zoom 8 as hollow triangles; a popup links the gage page (a
-  placeholder for now, `?page=gage&site=`) and the USGS monitoring-location page.
+- **Streamgages** from zoom 8 as hollow triangles; a popup opens the gage page and the USGS monitoring-location page.
 - **Left click** fills latitude, longitude and the jurisdiction under the point; nothing
   runs until Estimate. **Right click**: Delineate (basin only), Estimate (basin and
   quantiles), Copy lat/lon, Zoom to point. Typed coordinates move the pulsing marker.

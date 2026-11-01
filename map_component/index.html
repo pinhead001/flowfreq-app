@@ -7,8 +7,8 @@
   The basin map: MapLibre GL JS plus the Streamlit component protocol, by hand.
   No build step. Python side: map_component/__init__.py (args and value contract).
 -->
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
-<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" integrity="sha384-Nq6PQ+9vJPvw7U/VfDELyrWoGQMsy0gi6QShhaSrGzkpF5KkM40csg2leky+YMTd" crossorigin="anonymous">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js" integrity="sha384-GfxBM9x46BaAFxtCq39Fxir8fNZ4VDnwgfi6Kzi5/F1tAFsm0amuuV8kd+Pxzuf/" crossorigin="anonymous"></script>
 <style>
   html, body { margin: 0; padding: 0; height: 100%; background: transparent;
     font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -73,6 +73,7 @@
   <button type="button" data-act="zoom">Zoom to point</button>
 </div>
 <div class="chips">
+  <div class="chip" id="chip-busy" hidden></div>
   <div class="chip" id="chip-grid" hidden></div>
   <div class="chip" id="chip-coverage" hidden>
     <span class="swatch" style="background:#2e9e4f"></span>verified
@@ -102,7 +103,9 @@ const MODES = {
     chip: { bg: "rgba(255,255,255,0.85)", fg: "#222", border: "#999" },
     background: "#d9d9d9",
     shade: { kind: "grey", levels: 14, water: [207, 211, 214, 255] },
-    rivers: { brightnessMin: 0, brightnessMax: 1, saturation: 0, hueRotate: 0, opacity: 0.9 },
+    water: { line: "#3f86c4", fill: "#a9cbe6", label: "#24527c", halo: "rgba(255,255,255,0.85)",
+             nhd: { hueRotate: 0, saturation: 0, brightnessMax: 1, opacity: 0.9 },
+             wbd: { hueRotate: 0, saturation: 0, brightnessMax: 1, opacity: 0.55 } },
     stateLine: { color: "#555555", opacity: 1 },
     marker: "#d97706",
     streamgrid: { hueRotate: 0, saturation: 0.2, brightnessMin: 0 },
@@ -114,7 +117,9 @@ const MODES = {
     background: "#000000",
     shade: { kind: "tint", shadow: [0, 0, 0], highlight: [120, 140, 190], flat: 0.28, gain: 1.6,
              alpha: 170, levels: 0 },
-    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.35, hueRotate: 180, opacity: 0.9 },
+    water: { line: "#4d8fe6", fill: "#0b2145", label: "#a9c8ff", halo: "rgba(0,0,0,0.75)",
+             nhd: { hueRotate: 15, saturation: 0.2, brightnessMax: 0.85, opacity: 0.85 },
+             wbd: { hueRotate: 0, saturation: -0.3, brightnessMax: 0.9, opacity: 0.45 } },
     stateLine: { color: "#99aaaa", opacity: 0.6 },
     marker: "#39ff14",
     streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
@@ -127,7 +132,9 @@ const MODES = {
     shade: { kind: "iridescent", shadow: [1, 6, 4], base: [8, 46, 30], highlight: [125, 255, 179],
              accentA: [95, 216, 255], accentB: [182, 255, 106], flat: 0.3, gain: 1.7,
              alpha: 255, levels: 0 },
-    rivers: { brightnessMin: 0.95, brightnessMax: 0.02, saturation: 0.1, hueRotate: 140, opacity: 0.85 },
+    water: { line: "#2fd3a0", fill: "#05342a", label: "#8affd1", halo: "rgba(0,0,0,0.75)",
+             nhd: { hueRotate: -40, saturation: 0.1, brightnessMax: 0.9, opacity: 0.85 },
+             wbd: { hueRotate: 150, saturation: -0.2, brightnessMax: 0.9, opacity: 0.4 } },
     stateLine: { color: "#55ffdd", opacity: 0.5 },
     marker: "#39ff14",
     streamgrid: { hueRotate: -40, saturation: 0.6, brightnessMin: 0.4 },
@@ -147,6 +154,21 @@ const STREAMGRID_SERVICES = ["ak", "al", "ar", "az", "ca", "co", "crb", "ct", "d
   "mrb", "ms", "mt", "nc", "nd", "nh", "nj", "nm", "nrb", "nv", "ny", "oh", "ok", "or", "pa",
   "pr", "ri", "rrb", "sc", "sd", "tn", "tx", "ut", "va", "vt", "wa", "wi", "wv", "wy"];
 const BASIN_SERVICES = ["crb", "drb", "mo_stl", "mrb", "nrb", "rrb"];
+// USGS NHD (flowlines, areas, waterbodies; zoom ~10 in) and WBD (HUC2-HUC12), exported
+// with their labels switched off. The services keep their own scale ranges, so detail
+// still grows with zoom. Below zoom 10 the bundled Natural Earth water stands in.
+const USGS_HYDRO = "https://hydro.nationalmap.gov/arcgis/rest/services";
+function unlabelled(ids) {
+  return encodeURIComponent(JSON.stringify(ids.map((id) => ({
+    id, source: { type: "mapLayer", mapLayerId: id }, drawingInfo: { showLabels: false } }))));
+}
+function exportTiles(service, ids) {
+  return [`${USGS_HYDRO}/${service}/MapServer/export?bbox={bbox-epsg-3857}&bboxSR=3857` +
+          `&imageSR=3857&size=256,256&dynamicLayers=${unlabelled(ids)}` +
+          "&transparent=true&format=png32&f=image"];
+}
+const WATER_FONT = ["Noto Sans Italic"];
+const DETAIL_ZOOM = 5.5;  // when water_detail.geojson is fetched
 const GAGE_MINZOOM = 8;
 const GAGE_MAX_RECORDS = 10000;  // paging stops here; a z8 view in the East holds ~2000
 const GAGES_QUERY = `${STREAMSTATS}/StreamStats/nationalLayers/MapServer/0/query`;
@@ -157,9 +179,6 @@ const JUMPS = {
   territories: [[[-67.5, 17.6], [-64.5, 18.6]], [[144.5, 13.2], [146.1, 20.6]], [[-171.1, -14.6], [-168.1, -11.0]]],
 };
 const EMPTY = { type: "FeatureCollection", features: [] };
-// The app's own URL (Streamlit passes it to the iframe): popup links must point at the
-// app, not at this component's index.html.
-const APP_URL = new URLSearchParams(location.search).get("streamlitUrl") || document.referrer || "/";
 const COVERAGE_COLORS = { verified: "#2e9e4f", partial: "#d6b11f", snapshot: "#e07b24" };
 
 // ---------------------------------------------------------------------------
@@ -281,8 +300,10 @@ function createMap(args) {
   shadeMode = args.mode;
   map = new maplibregl.Map({
     container: "map",
-    bounds: CONUS,
-    fitBoundsOptions: { padding: 10 },
+    // A remounted map (back from another page) opens where the user last clicked.
+    ...(args.view
+      ? { center: [args.view[1], args.view[0]], zoom: args.view[2] }
+      : { bounds: CONUS, fitBoundsOptions: { padding: 10 } }),
     attributionControl: { compact: true },
     renderWorldCopies: true,
     // No rotation: there is no compass to put north back.
@@ -291,6 +312,7 @@ function createMap(args) {
     touchPitch: false,
     style: {
       version: 8,
+      glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
       sources: {
         // tileSize 1024 for 256-px images: MapLibre fetches two zoom levels coarser
         // and stretches each sample over 4x4 screen pixels.
@@ -301,11 +323,15 @@ function createMap(args) {
           tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/" +
                   "2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png"],
           attribution: "Night lights: NASA Black Marble" },
-        // NHD flowlines and WBD units with the server's own scale-dependent rendering:
-        // HUC2/4 and large rivers far out, HUC12 and small streams close in.
-        hydro: { type: "raster", tileSize: 256, maxzoom: 16,
-          tiles: ["https://basemap.nationalmap.gov/arcgis/rest/services/USGSHydroCached/MapServer/tile/{z}/{y}/{x}"],
-          attribution: "Hydrography: USGS The National Map" },
+        wbd: { type: "raster", tileSize: 256, tiles: exportTiles("wbd", [1, 2, 3, 4, 5, 6]),
+          attribution: "HUCs: USGS WBD" },
+        nhd: { type: "raster", tileSize: 256, minzoom: 9,
+          tiles: exportTiles("nhd", [4, 5, 6, 7, 8, 9, 10, 11, 12]),
+          attribution: "Streams: USGS NHD" },
+        "water-base": { type: "geojson", data: "./water_base.geojson",
+          attribution: "Water: Natural Earth" },
+        "water-detail": { type: "geojson", data: EMPTY },
+        "water-labels": { type: "geojson", data: "./water_labels.geojson" },
         states: { type: "geojson", data: EMPTY, promoteId: "code",
           attribution: "Boundaries: US Census TIGERweb" },
       },
@@ -318,7 +344,11 @@ function createMap(args) {
                    "raster-opacity": ["interpolate", ["linear"], ["zoom"], 10, 1, 12, 0] } },
         { id: "shade-fine", type: "raster", source: "shade-fine", minzoom: 9.5,
           paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 9.5, 0, 11.5, 1] } },
-        { id: "hydro", type: "raster", source: "hydro" },
+        { id: "wbd", type: "raster", source: "wbd" },
+        ...waterLayers("water-base"),
+        ...waterLayers("water-detail"),
+        { id: "nhd", type: "raster", source: "nhd", minzoom: 9.5,
+          paint: { "raster-opacity-transition": { duration: 0 } } },
         { id: "state-fill", type: "fill", source: "states", layout: { visibility: "none" },
           paint: { "fill-opacity": 0.25,
                    "fill-color": ["match", ["coalesce", ["feature-state", "tint"], ""],
@@ -327,6 +357,13 @@ function createMap(args) {
         { id: "state-line", type: "line", source: "states",
           paint: { "line-width": 0.6, "line-color": MODES[args.mode].stateLine.color,
                    "line-opacity": MODES[args.mode].stateLine.opacity } },
+        ...waterLabelLayers("water-base"),
+        ...waterLabelLayers("water-detail"),
+        { id: "marine-names", type: "symbol", source: "water-labels",
+          filter: ["<=", ["get", "labelz"], ["+", ["zoom"], 1]],
+          layout: { "text-field": ["get", "name"], "text-font": WATER_FONT,
+                    "text-size": ["interpolate", ["linear"], ["zoom"], 3, 11, 8, 15],
+                    "text-letter-spacing": 0.15, "text-max-width": 8 } },
       ],
     },
   });
@@ -334,6 +371,10 @@ function createMap(args) {
   map.keyboard.disableRotation();
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
   map.on("load", () => {
+    // Start with the attribution folded to its (i) button: expanded, it covers labels
+    // along the bottom edge. One click shows it.
+    const attrib = document.querySelector(".maplibregl-ctrl-attrib");
+    if (attrib) attrib.classList.remove("maplibregl-compact-show");
     addOverlayLayers();
     ready = true;
     applyAll(pending || args, null);
@@ -361,11 +402,20 @@ function createMap(args) {
     openMenu(e.point, e.lngLat.wrap());
   });
   map.on("movestart", closeMenu);
+  map.on("moveend", loadWaterDetail);
   map.on("moveend", updateStreamGrid);
   map.on("moveend", scheduleGages);
 }
 
 function emit(action, lngLat) {
+  if (action === "delineate" || action === "estimate") {
+    // StreamStats takes 10-30 s; say so here, where the user is looking. The next
+    // render (Python done) clears it.
+    const busy = document.getElementById("chip-busy");
+    busy.textContent = action === "delineate"
+      ? "Delineating with StreamStats (10-30 s)..." : "Delineating and estimating (10-30 s)...";
+    busy.hidden = false;
+  }
   setValue({ action, lat: lngLat.lat, lon: lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
 }
 
@@ -420,7 +470,11 @@ function scheduleGages() {
 
 async function updateGages() {
   const mine = ++gageSeq;
-  if (map.getZoom() < GAGE_MINZOOM) { map.getSource("gages").setData(EMPTY); return; }
+  if (map.getZoom() < GAGE_MINZOOM) {
+    map.getSource("gages").setData(EMPTY);
+    closePopups();  // its gage is no longer drawn
+    return;
+  }
   const b = map.getBounds(), r = (v, f) => f(v * 2) / 2;  // snap to a 0.5-degree grid
   const box = [r(b.getWest(), Math.floor), r(b.getSouth(), Math.floor),
                r(b.getEast(), Math.ceil), r(b.getNorth(), Math.ceil)];
@@ -447,21 +501,29 @@ async function updateGages() {
   map.getSource("gages").setData(gageCache.get(key));
 }
 
+function closePopups() {
+  document.querySelectorAll(".maplibregl-popup").forEach((el) => el.remove());
+}
+
 function openGagePopup(feature) {
   const id = String(feature.properties.STA_ID || "").trim();
   const name = String(feature.properties.STA_NAME || "").trim();
-  const app = new URL(APP_URL, location.href);
-  app.search = `?page=gage&site=${encodeURIComponent(id)}`;
   const root = document.createElement("div");
   const title = document.createElement("b");
   title.textContent = id;
   const label = document.createElement("div");
   label.textContent = name;  // a text node: names are data, never markup
   const links = document.createElement("div");
+  // The component iframe may not navigate the top window (its sandbox lacks
+  // allow-top-navigation), so the app switches page on an event instead.
   const page = document.createElement("a");
-  page.href = app.toString();
-  page.target = "_top";
+  page.href = "#";
   page.textContent = "Gage page";
+  page.addEventListener("click", (event) => {
+    event.preventDefault();
+    const c = map.getCenter().wrap();  // so "Back to the map" returns to this view
+    setValue({ action: "gage", site: id, lat: c.lat, lon: c.lng, zoom: map.getZoom(), nonce: ++nonce });
+  });
   const usgs = document.createElement("a");
   usgs.href = `https://waterdata.usgs.gov/monitoring-location/${encodeURIComponent(id)}/`;
   usgs.target = "_blank";
@@ -521,8 +583,88 @@ document.querySelector(".jump").addEventListener("click", (event) => {
   const stops = JUMPS[name], i = (jumpStep[name] || 0) % stops.length;
   jumpStep[name] = i + 1;
   closeMenu();
+  closePopups();
   map.fitBounds(stops[i], { padding: 20 });
 });
+
+// ---------------------------------------------------------------------------
+// Water below zoom 10: Natural Earth rivers and lakes, styled per mode, labelled with
+// real names. Each feature carries the zoom Natural Earth shows it from (minz) and
+// labels it from (labelz). Fades out as the NHD fades in.
+// ---------------------------------------------------------------------------
+const FADE_OUT = ["interpolate", ["linear"], ["zoom"], 9.5, 1, 10.5, 0];
+const shown = (key) => ["<=", ["get", key], ["+", ["zoom"], 1]];
+
+function waterLayers(source) {
+  return [
+    { id: `${source}-lakes`, type: "fill", source, maxzoom: 10.5,
+      filter: ["all", ["==", ["get", "kind"], "lake"], shown("minz")],
+      paint: { "fill-opacity": FADE_OUT } },
+    { id: `${source}-rivers`, type: "line", source, maxzoom: 10.5,
+      filter: ["all", ["==", ["get", "kind"], "river"], shown("minz")],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-opacity": FADE_OUT,
+               "line-width": ["interpolate", ["linear"], ["zoom"],
+                 3, ["max", 0.4, ["-", 2.0, ["*", 0.15, ["get", "rank"]]]],
+                 9, ["max", 0.9, ["-", 3.6, ["*", 0.2, ["get", "rank"]]]]] } },
+  ];
+}
+
+// The full name ("Flathead River") from the zoom it fits its feature (fullz, measured by
+// tools/build_hydro_geojson.py), the short one ("Flathead R.") below. A style may use
+// ["zoom"] only as the input of a top-level step, hence one case per half zoom.
+const FITTED_NAME = (() => {
+  const pick = (z) => ["case", ["<=", ["coalesce", ["get", "fullz"], 0], z],
+    ["get", "name"], ["coalesce", ["get", "short"], ["get", "name"]]];
+  const expr = ["step", ["zoom"], pick(0)];
+  for (let z = 0.5; z <= 12; z += 0.5) expr.push(z, pick(z));
+  return expr;
+})();
+
+function waterLabelLayers(source) {
+  const named = (kind) => ["all", ["==", ["get", "kind"], kind], ["has", "name"], shown("labelz")];
+  return [
+    { id: `${source}-lake-names`, type: "symbol", source, maxzoom: 12, filter: named("lake"),
+      layout: { "text-field": FITTED_NAME, "text-font": WATER_FONT, "text-size": 11,
+                "text-max-width": 7 } },
+    { id: `${source}-river-names`, type: "symbol", source, maxzoom: 12, filter: named("river"),
+      layout: { "symbol-placement": "line", "text-field": FITTED_NAME, "text-font": WATER_FONT,
+                "text-size": 10.5, "symbol-spacing": 400 } },
+  ];
+}
+
+const WATER_LINES = ["water-base-rivers", "water-detail-rivers"];
+const WATER_FILLS = ["water-base-lakes", "water-detail-lakes"];
+const WATER_TEXT = ["water-base-lake-names", "water-base-river-names", "water-detail-lake-names",
+                    "water-detail-river-names", "marine-names"];
+
+function applyWaterPaint(w) {
+  for (const id of WATER_LINES) map.setPaintProperty(id, "line-color", w.line);
+  for (const id of WATER_FILLS) map.setPaintProperty(id, "fill-color", w.fill);
+  for (const id of WATER_TEXT) {
+    map.setPaintProperty(id, "text-color", w.label);
+    map.setPaintProperty(id, "text-halo-color", w.halo);
+    map.setPaintProperty(id, "text-halo-width", 1.2);
+  }
+  for (const [layer, r] of [["nhd", w.nhd], ["wbd", w.wbd]]) {
+    map.setPaintProperty(layer, "raster-hue-rotate", r.hueRotate);
+    map.setPaintProperty(layer, "raster-saturation", r.saturation);
+    map.setPaintProperty(layer, "raster-brightness-max", r.brightnessMax);
+    map.setPaintProperty(layer, "raster-opacity", layer === "nhd"
+      ? ["interpolate", ["linear"], ["zoom"], 9.5, 0, 10.5, r.opacity]
+      // HUC2 regions fill the CONUS view: lighter there, full strength by zoom 8.
+      : ["interpolate", ["linear"], ["zoom"], 3, r.opacity * 0.45, 8, r.opacity]);
+  }
+}
+
+let waterDetailLoaded = false;
+async function loadWaterDetail() {
+  if (!ready || waterDetailLoaded || map.getZoom() < DETAIL_ZOOM) return;
+  waterDetailLoaded = true;
+  try {
+    map.getSource("water-detail").setData(await (await fetch("./water_detail.geojson")).json());
+  } catch (err) { waterDetailLoaded = false; }  // retried on the next move
+}
 
 // ---------------------------------------------------------------------------
 // Style buttons: restyle now, then tell Python so the choice survives reruns.
@@ -676,11 +818,7 @@ function applyMode(mode) {
     shadeMode = mode;
   }
   map.setLayoutProperty("lights", "visibility", mode === "night" ? "visible" : "none");
-  map.setPaintProperty("hydro", "raster-brightness-min", m.rivers.brightnessMin);
-  map.setPaintProperty("hydro", "raster-brightness-max", m.rivers.brightnessMax);
-  map.setPaintProperty("hydro", "raster-saturation", m.rivers.saturation);
-  map.setPaintProperty("hydro", "raster-hue-rotate", m.rivers.hueRotate);
-  map.setPaintProperty("hydro", "raster-opacity", m.rivers.opacity);
+  applyWaterPaint(m.water);
   for (const service of gridAdded) {
     for (const [prop, value] of Object.entries(gridPaint(m))) map.setPaintProperty(`sg-${service}`, prop, value);
   }
@@ -734,7 +872,13 @@ function applyAll(args, prev) {
   if (pendingMode && args.mode === pendingMode) pendingMode = null;
   if (!pendingMode && args.mode !== appliedMode) applyMode(args.mode);
   // Python's point wins: this also snaps the orb back when Python ignored a click.
-  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) applyPoint(args.point, appliedMode);
+  if (!prev || !same(prev.point, args.point) || !markerAt(args.point)) {
+    const typed = prev && args.point && !markerAt(args.point);  // not the echo of a click
+    applyPoint(args.point, appliedMode);
+    if (typed && !map.getBounds().contains([args.point[1], args.point[0]])) {
+      map.easeTo({ center: [args.point[1], args.point[0]], duration: 600 });
+    }
+  }
   if (!prev || !same(prev.coverage, args.coverage) || !same(prev.overlays, args.overlays)) {
     applyCoverage(args.coverage, args.overlays);
   }
@@ -745,6 +889,7 @@ function applyAll(args, prev) {
 }
 
 function onRender(args) {
+  document.getElementById("chip-busy").hidden = true;  // Python has answered
   if (!map) {
     createMap(args);
     send("streamlit:setFrameHeight", { height: args.height });
@@ -756,10 +901,20 @@ function onRender(args) {
   last = args;
 }
 
-window.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
-});
-send("streamlit:componentReady", { apiVersion: 1 });
+if (typeof maplibregl === "undefined") {
+  // The CDN was unreachable or the file failed its integrity check: say so rather than
+  // leave a blank frame. The inputs below the map still work.
+  document.getElementById("map").innerHTML =
+    "<p style=\"padding:2em;font:14px sans-serif\">The map library could not be loaded " +
+    "(unpkg.com unreachable). Enter coordinates below the map instead.</p>";
+  send("streamlit:componentReady", { apiVersion: 1 });
+  send("streamlit:setFrameHeight", { height: 120 });
+} else {
+  window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "streamlit:render") onRender(event.data.args);
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+}
 </script>
 </body>
 </html>

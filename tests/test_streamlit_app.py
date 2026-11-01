@@ -483,14 +483,6 @@ def _app_with(params):
     return at.run()
 
 
-def test_gage_placeholder_names_the_site():
-    at = _app_with({"page": "gage", "site": "12358500"})
-    assert not at.exception
-    assert any("12358500" in h.value for h in at.header)
-    assert at.info  # the coming-soon line
-    assert not [h for h in at.header if "Ungaged" in h.value]
-
-
 def test_ungaged_param_opens_the_ungaged_page():
     at = _app_with({"page": "ungaged"})
     assert not at.exception
@@ -498,13 +490,70 @@ def test_ungaged_param_opens_the_ungaged_page():
 
 
 @pytest.mark.parametrize("site", ["<script>alert(1)</script>", "[x](https://evil.example)", "12"])
-def test_gage_placeholder_rejects_a_bad_site(site):
+def test_gage_page_rejects_a_bad_site(site):
     at = _app_with({"page": "gage", "site": site})
     assert not at.exception
     assert not any(site in h.value for h in at.header)
     assert any("not a valid" in e.value for e in at.error)
 
 
-def test_gage_placeholder_links_back_to_the_map():
-    at = _app_with({"page": "gage", "site": "12358500"})
-    assert any("?page=ungaged" in m.value for m in at.markdown)
+def test_gage_param_renders_the_gage_page(monkeypatch):
+    import gage_ui
+
+    calls = []
+    monkeypatch.setattr(gage_ui, "render", lambda site: calls.append(site))
+    at = _app_with({"page": "gage", "site": "12340500"})
+    assert not at.exception
+    assert calls == ["12340500"]
+
+
+def test_gaged_param_prefills_the_gage_number():
+    at = _app_with({"page": "gaged", "site": "12340500"})
+    assert not at.exception
+    assert at.text_input[0].value == "12340500"
+
+
+def test_gaged_param_ticks_ffa_and_says_what_to_do():
+    at = _app_with({"page": "gaged", "site": "12340500"})
+    assert not at.exception
+    ffa = [c for c in at.checkbox if c.label == "Enable Flood Frequency Analysis"][0]
+    assert ffa.value is True
+    assert any("12340500" in i.value and "Download Data" in i.value for i in at.info)
+
+
+def test_map_and_gage_pages_have_their_own_titles():
+    at = _app_with({"page": "ungaged"})
+    assert not [t for t in at.title if "Hydrograph-erator" in t.value]
+
+
+def test_bad_site_page_uses_the_back_button():
+    at = _app_with({"page": "gage", "site": "12"})
+    assert [b for b in at.button if "Back to the map" in b.label]
+
+
+def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
+    at = _app_with({"page": "ungaged"})
+    at.number_input(key="ungaged_lat").set_value(46.87)
+    at.number_input(key="ungaged_lon").set_value(-113.99)
+    at.run()
+    # Streamlit drops the state of widgets a run does not draw, as on the Gaged page.
+    at.sidebar.radio[0].set_value("Gaged site")
+    at.run()
+    at.sidebar.radio[0].set_value("Ungaged site")
+    at.run()
+    assert not at.exception
+    assert at.number_input(key="ungaged_lat").value == 46.87
+    assert at.number_input(key="ungaged_lon").value == -113.99
+
+
+def test_a_hand_off_with_run_starts_the_download_once(app_module):
+    # The gage page's Bulletin 17C link carries run=1: the new window downloads and runs
+    # the analysis on arrival, once; later reruns wait for the button as usual.
+    state = {}
+    assert app_module.auto_run_requested({"run": "1"}, state)
+    assert not app_module.auto_run_requested({"run": "1"}, state)
+
+
+def test_no_run_flag_no_automatic_download(app_module):
+    assert not app_module.auto_run_requested({}, {})
+    assert not app_module.auto_run_requested({"run": "yes"}, {})

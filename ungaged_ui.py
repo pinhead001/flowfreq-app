@@ -40,13 +40,18 @@ from flowfreq.streamstats import (
 )
 from flowfreq.ungaged import SiteEstimate
 
-from map_component import MODES, basin_map
+from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
 
 logger = logging.getLogger(__name__)
 
-#: Map events that carry a point; ``mode`` (the on-map style buttons) carries a style.
+#: Map events that carry a point; ``mode`` (the on-map style buttons) carries a style and
+#: ``gage`` (a gage popup's "Gage page" link) a site number.
 MAP_ACTIONS = ("point", "delineate", "estimate")
+_SITE_RE = re.compile(r"\d{8,15}")
+#: Input values kept outside the widgets: Streamlit drops a widget's state on any run
+#: that does not draw it, so a trip to another page would empty the inputs.
+_KEPT = ("ungaged_lat", "ungaged_lon", "ungaged_state")
 
 BADGE_VERIFIED = "verified"
 BADGE_PARTIAL = "partial"
@@ -59,6 +64,8 @@ AEP_CHOICES = (0.5, 0.2, 0.1, 0.04, 0.02, 0.01, 0.005, 0.002)
 RESULT_KEY = "ungaged_result"
 #: An estimate a callback asked for (the "Re-run with" buttons); run once inputs are read.
 PENDING_KEY = "ungaged_pending"
+#: The jurisdictions a queued comparison covers (the "Compare" button).
+COMPARE_KEY = "ungaged_compare"
 
 
 def coverage_badge(code: str) -> str:
@@ -353,6 +360,8 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
     action = event.get("action") if isinstance(event, dict) else None
     if action == "mode":
         ok = event.get("mode") in MODES and number("nonce")
+    elif action == "gage":
+        ok = bool(_SITE_RE.fullmatch(str(event.get("site", "")))) and number("nonce")
     else:
         ok = action in MAP_ACTIONS and all(number(k) for k in ("lat", "lon", "nonce"))
     if not ok:
@@ -367,15 +376,33 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
     if action == "mode":
         st.session_state["map_mode"] = event["mode"]
         return action
+    if action == "gage":
+        st.session_state["map_gage"] = str(event["site"])
+        if all(number(k) for k in ("lat", "lon", "zoom")):  # so "Back to the map" returns here
+            st.session_state["map_view"] = (
+                round(float(event["lat"]), 6),
+                round(float(event["lon"]), 6),
+                float(event["zoom"]),
+            )
+        return action
     # A click on a repeated world copy arrives outside +-180; bring it back.
     lon = (float(event["lon"]) + 180.0) % 360.0 - 180.0
     lat, lon = round(float(event["lat"]), 6), round(lon, 6)
     st.session_state["ungaged_lat"] = lat
     st.session_state["ungaged_lon"] = lon
+    if number("zoom"):
+        st.session_state["map_view"] = (lat, lon, float(event["zoom"]))
     code = state_at(lat, lon)
     if code in codes:
         st.session_state["ungaged_state"] = code
-    return event["action"]
+    elif action in ("delineate", "estimate"):
+        # StreamStats would run with whatever jurisdiction the selectbox held.
+        st.session_state["map_notice"] = (
+            "That point is outside the states and territories StreamStats serves; "
+            "nothing was run."
+        )
+        return "point"
+    return action
 
 
 def _basin_payload(
@@ -484,21 +511,13 @@ def basin_download_name(state: str, lat: float, lon: float) -> str:
     return f"ungaged_{state}_{lat:.4f}_{lon:.4f}.geojson"
 
 
-#: Per-basin values the page shows on every rerun, by the identity of the stored Feature
-#: (which survives reruns): the GeoJSON download text and the jurisdictions it touches.
-_BASIN_EXTRAS: Dict[int, Tuple[Dict[str, Any], str, List[str]]] = {}
-_BASIN_EXTRAS_MAX = 16
+#: Per-basin values the page shows on every rerun, once per stored Feature: the GeoJSON
+#: download text and the jurisdictions the basin touches.
+_BASIN_EXTRAS = IdentityCache()
 
 
 def _basin_extras(basin: Dict[str, Any]) -> Tuple[str, List[str]]:
-    hit = _BASIN_EXTRAS.get(id(basin))
-    if hit is not None and hit[0] is basin:
-        return hit[1], hit[2]
-    text, touching = json.dumps(basin), states_touching(basin)
-    if len(_BASIN_EXTRAS) >= _BASIN_EXTRAS_MAX:
-        _BASIN_EXTRAS.pop(next(iter(_BASIN_EXTRAS)))
-    _BASIN_EXTRAS[id(basin)] = (basin, text, touching)
-    return text, touching
+    return _BASIN_EXTRAS.get(basin, lambda b: (json.dumps(b), states_touching(b)))
 
 
 def _basin_download(basin: Dict[str, Any], state: str, lat: float, lon: float) -> None:
@@ -516,6 +535,83 @@ def _rerun_in(code: str) -> None:
     st.session_state[PENDING_KEY] = "estimate"
 
 
+def comparison_frame(estimates: Dict[str, SiteEstimate]) -> pd.DataFrame:
+    """Each state's flow at each AEP, side by side, formatted for display.
+
+    Parameters
+    ----------
+    estimates : dict
+        Jurisdiction code to its estimate for the same basin, in display order.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``AEP (%)`` then one ``XX (cfs)`` column per state, largest AEP first; a state
+        that does not publish an AEP is blank there.
+    """
+    flows = {
+        code: dict(zip(e.quantiles["aep"], e.quantiles["flow_cfs"]))
+        for code, e in estimates.items()
+    }
+    aeps = sorted({a for per in flows.values() for a in per}, reverse=True)
+    rows = []
+    for aep in aeps:
+        row = {"AEP (%)": f"{aep * 100:g}"}
+        for code, per in flows.items():
+            value = per.get(aep)
+            row[f"{code} (cfs)"] = "" if value is None or pd.isna(value) else f"{value:,.0f}"
+        rows.append(row)
+    return pd.DataFrame(rows, columns=["AEP (%)"] + [f"{c} (cfs)" for c in flows])
+
+
+def _compare_in(codes: List[str]) -> None:
+    # A callback: queue the comparison; render() runs it once the inputs are read.
+    st.session_state[PENDING_KEY] = "compare"
+    st.session_state[COMPARE_KEY] = list(codes)
+
+
+def _store_comparison(inputs: Dict[str, Any], codes: Sequence[str]) -> None:
+    result = st.session_state.get(RESULT_KEY)
+    if not result or "estimate" not in result.get("outcome", {}):
+        return
+    outcomes: Dict[str, Dict[str, Any]] = {inputs["state"]: result["outcome"]}
+    for code in codes:
+        if code == inputs["state"]:
+            continue
+        with st.spinner(f"Estimating with {code}'s equations..."):
+            outcomes[code] = run_estimate(
+                inputs["lat"],
+                inputs["lon"],
+                code,
+                inputs["aeps"],
+                inputs["snapshot"],
+                allow_extrapolation=inputs["extrapolate"],
+            )
+    result["compare"] = outcomes
+
+
+def _show_comparison(outcomes: Dict[str, Dict[str, Any]]) -> None:
+    st.subheader("Compared across states")
+    estimates = {code: o["estimate"] for code, o in outcomes.items() if "estimate" in o}
+    if len(estimates) > 1:
+        st.dataframe(comparison_frame(estimates), hide_index=True)
+        st.caption(
+            "Each column applies one state's published equations to the same basin. They "
+            "are separate reports with their own regions and characteristics, not parts of "
+            "one estimate."
+        )
+    for tab, (code, outcome) in zip(st.tabs(list(outcomes)), outcomes.items()):
+        with tab:
+            if "estimate" in outcome:
+                estimate = outcome["estimate"]
+                st.caption(
+                    f"Method: {estimate.method}. Equation library: {estimate.library_status}."
+                )
+                st.dataframe(_quantile_frame(estimate), hide_index=True)
+            else:
+                st.error(outcome.get("error", "No estimate."))
+
+
 def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
     codes = {j.code for j in JURISDICTIONS}
     others = [c for c in _basin_extras(basin)[1] if c != used and c in codes]
@@ -523,10 +619,21 @@ def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
         return
     st.info(
         f"This basin also lies in {', '.join(others)}. Each state's equations are its own "
-        "report; re-run to see another's."
+        "report: re-run with one, or compare them side by side."
     )
-    for col, code in zip(st.columns(len(others)), others):
+    cols = st.columns(len(others) + 1)
+    for col, code in zip(cols, others):
         col.button(f"Re-run with {code}", on_click=_rerun_in, args=(code,), key=f"rerun_{code}")
+    everyone = [used] + others
+    cols[-1].button(
+        f"Compare {', '.join(everyone[:-1])} and {everyone[-1]}",
+        on_click=_compare_in,
+        args=(everyone,),
+        key="compare_states",
+    )
+    compared = (st.session_state.get(RESULT_KEY) or {}).get("compare")
+    if compared:
+        _show_comparison(compared)
 
 
 def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
@@ -549,6 +656,30 @@ def _store_basin(inputs: Dict[str, Any]) -> None:
     st.session_state[RESULT_KEY] = {"inputs": inputs, "outcome": outcome}
 
 
+def _status_line(result: Optional[Dict[str, Any]]) -> None:
+    """One line just under the map saying what the last action produced.
+
+    The details sit below the inputs, out of sight on a short screen; this line is
+    where the user is already looking after a click on the map.
+    """
+    outcome = (result or {}).get("outcome")
+    if not outcome:
+        return
+    if "estimate" in outcome:
+        rows = len(outcome["estimate"].quantiles)
+        st.success(f"Estimate ready: {rows} flood quantile(s), below the inputs.")
+    elif "basin" in outcome:
+        area = outcome.get("area_sq_mi")
+        size = f"{area:,.1f} sq mi" if area is not None else "area unknown"
+        st.success(f"Basin delineated: {size}. Press Estimate for flood quantiles.")
+    elif outcome.get("kind") == "overlap":
+        st.info("Choose an equation set below the inputs to finish the estimate.")
+    elif outcome.get("kind") in REFUSAL_KINDS:
+        st.warning(outcome["error"])
+    else:
+        st.error(outcome["error"])
+
+
 def render() -> None:
     """Draw the ungaged-site page."""
     st.header("Ungaged site: regional regression")
@@ -558,6 +689,9 @@ def render() -> None:
         "the flowfreq library."
     )
     codes = [j.code for j in JURISDICTIONS]
+    for key in _KEPT:  # back from another page: restore what the widgets lost
+        if key not in st.session_state and f"_{key}" in st.session_state:
+            st.session_state[key] = st.session_state[f"_{key}"]
     st.session_state.setdefault("ungaged_lat", None)
     st.session_state.setdefault("ungaged_lon", None)
     st.session_state.setdefault("map_mode", default_mode())
@@ -574,8 +708,16 @@ def render() -> None:
         mode=st.session_state["map_mode"] or default_mode(),
         overlays=frozenset({"coverage"}) if st.session_state["map_coverage"] else frozenset(),
         coverage=_coverage(),
+        view=st.session_state.get("map_view"),
     )
     action = handle_map_event(event, codes)
+    if action == "gage":
+        st.query_params.from_dict({"page": "gage", "site": st.session_state.pop("map_gage")})
+        st.rerun()
+    notice = st.session_state.pop("map_notice", None)
+    if notice:
+        st.warning(notice)
+    _status_line(st.session_state.get(RESULT_KEY))
     st.toggle(
         "Equation coverage",
         key="map_coverage",
@@ -608,6 +750,8 @@ def render() -> None:
         help="Needed for jurisdictions whose library is harvested from NSS.",
     )
     extrapolate = st.checkbox("Allow extrapolation outside the calibrated range", value=False)
+    for key in _KEPT:
+        st.session_state[f"_{key}"] = st.session_state.get(key)
 
     badge = coverage_badge(state) if state is not None else BADGE_NONE
     if badge == BADGE_NONE:
@@ -628,11 +772,13 @@ def render() -> None:
         # The widgets moved on: the result (and any overlap choice) belongs to old inputs.
         del st.session_state[RESULT_KEY]
         st.session_state.pop("ungaged_candidate", None)
-        if action == "point":
-            st.rerun()  # the map was drawn with the old basin; redraw it without
+        st.rerun()  # the map, drawn above, still shows the old basin; redraw it without
 
-    if st.session_state.pop(PENDING_KEY, None) == "estimate":
+    pending = st.session_state.pop(PENDING_KEY, None)
+    if pending == "estimate":
         action = "estimate"
+    elif pending == "compare":
+        _store_comparison(current, st.session_state.pop(COMPARE_KEY, []))
     if action == "delineate":
         _store_basin(current)
         st.rerun()  # so the map receives the basin
@@ -645,6 +791,7 @@ def render() -> None:
             st.session_state[RESULT_KEY] = {
                 "outcome": {"error": "Enter a latitude and a longitude.", "kind": "input"}
             }
+            st.rerun()  # the status line, under the map, shows it
         else:
             _store(current)
             st.rerun()  # so the map, drawn above, receives the basin
@@ -660,7 +807,6 @@ def render() -> None:
     elif "basin" in outcome:
         area = outcome.get("area_sq_mi")
         size = f"{area:,.1f} sq mi" if area is not None else "area unknown"
-        st.caption(f"Basin delineated: {size}. Press Estimate for quantiles.")
         if inputs is not None:
             _basin_download(outcome["basin"], inputs["state"], inputs["lat"], inputs["lon"])
     elif outcome.get("kind") == "overlap" and inputs is not None:
@@ -681,7 +827,4 @@ def render() -> None:
         if st.button("Run with this equation set") and chosen is not None:
             _store(inputs, region=chosen[0])
             st.rerun()
-    elif outcome.get("kind") in REFUSAL_KINDS:
-        st.warning(outcome["error"])
-    else:
-        st.error(outcome["error"])
+    # Any other failure is shown once, by _status_line, just under the map.
