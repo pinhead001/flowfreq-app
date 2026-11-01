@@ -18,11 +18,11 @@ session-by-session detail is ever needed.
 
 ## Next steps (2026-11-01)
 
-Open PRs, each green in CI and independent of the others; merge in any order. Each adds a
+#25 (daily chart labels by span) is merged. Open PRs, each green in CI and independent of the
+others; merge in any order. Each adds a
 section at the top of CHANGELOG.md's Unreleased, so every merge after the first needs that
 one-hunk conflict resolved.
 
-- #25 daily chart labels by span (months / "WY 2017"), ticks at local midnights.
 - #27 page radio and gage number survive a page round trip; the page goes in the URL.
 - #28 network errors name the service ("502 Bad Gateway from streamstats.usgs.gov").
 - #29 MapLibre and the label glyphs served from `map_component/` (adds a root `.gitattributes`).
