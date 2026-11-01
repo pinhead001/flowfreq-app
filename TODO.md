@@ -42,9 +42,6 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
 
 - **Browser Back after an in-app page switch** leaves the URL and the page out of step until a
   refresh (Streamlit does not rerun on popstate). Fix properly with `st.navigation`/`st.Page`.
-- **Sidebar page radio** recreates itself when the query params clear (its `index` flips);
-  give it a key and set it from `?page=` once. A prefilled `?page=gaged&site=` is lost on a
-  sidebar round trip.
 - **Self-host MapLibre and the glyphs** next to `index.html` (the JS now carries an SRI hash
   and a load-failure message; the glyphs still come from MapLibre's demo server).
 - **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the

@@ -418,12 +418,39 @@ if requested == PAGE_GAGE:
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
     st.stop()
 
+_URL_FOR_PAGE = {PAGE_GAGED: "flowfrequency", PAGE_UNGAGED: "ungaged"}
+
+
+def apply_linked_page(
+    requested: Optional[str], params: Mapping[str, str], state: MutableMapping[str, Any]
+) -> None:
+    """Set the page radio's value before it is drawn: from a ``?page=`` link once per
+    distinct link, else the page last chosen.
+
+    The page is kept in ``_page``, outside the widget: Streamlit drops the state of a
+    widget a run does not draw, and the gage page does not draw the radio. A link (the
+    gage page's "Back to the map", a shared URL) moves it only when the URL's page differs
+    from the last one applied, so a rerun on the same URL does not undo a hand choice.
+    """
+    link = params.get("page", "")
+    if requested in _URL_FOR_PAGE and state.get("_page_link") != link:
+        state["_page"] = requested
+    if requested in _URL_FOR_PAGE or not link:
+        state["_page_link"] = link
+    state["page_radio"] = state.setdefault("_page", PAGE_GAGED)
+
+
+def _page_chosen() -> None:
+    # Choosing a page by hand: the URL names it, and drops the link's site and run.
+    st.session_state["_page"] = st.session_state["page_radio"]
+    link = _URL_FOR_PAGE[st.session_state["_page"]]
+    st.query_params.from_dict({"page": link})
+    st.session_state["_page_link"] = link
+
+
+apply_linked_page(requested, st.query_params, st.session_state)
 page = st.sidebar.radio(
-    "Page",
-    [PAGE_GAGED, PAGE_UNGAGED],
-    index=1 if requested == PAGE_UNGAGED else 0,
-    horizontal=True,
-    on_change=st.query_params.clear,  # choosing a page by hand drops the link's parameter
+    "Page", [PAGE_GAGED, PAGE_UNGAGED], key="page_radio", horizontal=True, on_change=_page_chosen
 )
 
 if page == PAGE_UNGAGED:
@@ -457,8 +484,17 @@ input_mode = st.sidebar.radio("Input Mode", ["Single Gage", "Multiple Gages"])
 
 if input_mode == "Single Gage":
     # A gage page's "Run Bulletin 17C" link arrives as ?page=flowfrequency&site=NNNNNNNN.
-    default_gage = linked_site if requested == PAGE_GAGED and linked_site else "12358500"
-    gage_input = st.sidebar.text_input("USGS Gage Number", value=default_gage)
+    # The number is kept outside the widget: Streamlit drops the state of widgets a run
+    # does not draw, so a trip to the Ungaged page would reset it.
+    if handed_off and st.session_state.get("_gage_link") != linked_site:
+        st.session_state["_gage_link"] = st.session_state["_gage_number"] = linked_site
+    st.session_state.setdefault("_gage_number", "12358500")
+    st.session_state["gage_number"] = st.session_state["_gage_number"]
+    gage_input = st.sidebar.text_input(
+        "USGS Gage Number",
+        key="gage_number",
+        on_change=lambda: st.session_state.update(_gage_number=st.session_state["gage_number"]),
+    )
     gage_list = [gage_input.strip()] if gage_input else []
 else:
     gage_input = st.sidebar.text_area(
