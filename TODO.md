@@ -30,8 +30,8 @@ One PR per phase, in this order. The follow-up entries below hold the detail.
    states build script checks its record limit and feature count.
 2. **Real water-body names** (done 2026-10-31, branch `feat/water-names`). Find a label-free hydro source that keeps
    scale-dependent rivers and HUCs, then label water bodies ourselves.
-3. **Library delineate-only call** (flowfreq PR #261 open; the app adopts it after the release that tags it). Polygon from `ss-delineate`
-   without `ss-hydro`; the app's Delineate adopts it after the pin bump.
+3. ~~**Library delineate-only call**~~ Done 2026-10-31: Delineate uses `delineate_watershed`
+   (flowfreq v0.19.0+), the polygon without `ss-hydro`.
 4. **New features**: the gage page (v1 done 2026-10-31, branch `feat/gage-page`), cross-state
    comparison (option B, done 2026-10-31, branch `feat/review-polish`), then the skew-region overlay (spike on HUC geometry
    from the WBD service).
@@ -62,10 +62,6 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
   seen end to end (the component draws an injected polygon correctly; the page shows the
   outage as an error). Re-run the two unchecked items in `docs/map_manual_checks.md`.
-- **Library: a delineate-only call that skips `ss-hydro`.** The map's *Delineate* uses
-  `delineate_and_get_characteristics`, which always calls `ss-hydro` for characteristics
-  although the polygon comes from `ss-delineate`. A polygon-only path in flowfreq would make
-  Delineate faster and immune to `ss-hydro` outages like the one above. Library work.
 - **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window.
 - **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
   in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,

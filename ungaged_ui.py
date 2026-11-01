@@ -36,7 +36,7 @@ from flowfreq.streamstats import (
     RegionNotDelineatedError,
     RegulatedDelineationError,
     UnsnappablePointError,
-    delineate_and_get_characteristics,
+    delineate_watershed,
 )
 from flowfreq.ungaged import SiteEstimate
 
@@ -163,7 +163,7 @@ def streamstats_refusal(exc: Exception, state: str) -> Optional[Dict[str, str]]:
     if isinstance(exc, RegionNotDelineatedError):
         return {
             "error": (
-                f"StreamStats does not delineate basins in {_state_label(state)}: its stream "
+                f"StreamStats does not delineate basins in {_state_name(state)}: its stream "
                 "grid does not cover the state, so no point there can be delineated. The "
                 "basin characteristics would have to come from somewhere else."
             ),
@@ -266,9 +266,12 @@ def run_estimate(
 def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     """Delineate the basin at a point, without equations. Never raises.
 
-    The map's *Delineate* action. Asks StreamStats for the same characteristics as
-    :func:`run_estimate` through the same cache (:func:`_streamstats_cache`), so an
-    *Estimate* at the same point afterwards does not delineate again.
+    The map's *Delineate* action: :func:`flowfreq.streamstats.delineate_watershed`, the
+    polygon from StreamStats' delineation service without the ss-hydro basin
+    characteristics request. It is one round trip shorter and still works when ss-hydro
+    alone is down. The polygon is cached in the page's StreamStats cache
+    (:func:`_streamstats_cache`) under its own key, so an *Estimate* at the same point
+    afterwards delineates again when it asks for the characteristics.
 
     Parameters
     ----------
@@ -287,7 +290,7 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
         ``network`` or ``unexpected``.
     """
     try:
-        ws = delineate_and_get_characteristics(state, lat, lon, cache=_streamstats_cache())
+        ws = delineate_watershed(state, lat, lon, cache=_streamstats_cache())
     except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
@@ -297,13 +300,10 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
     if ws.polygon_geojson is None:
         return {"error": "StreamStats returned no watershed polygon here.", "kind": "input"}
-    area = ws.polygon_area_sq_mi
-    if area is None and "DRNAREA" in ws:
-        area = ws["DRNAREA"].value
     return {
         "basin": ws.polygon_geojson,
         "snap": (ws.snap.snapped_lat, ws.snap.snapped_lon),
-        "area_sq_mi": area,
+        "area_sq_mi": ws.polygon_area_sq_mi,
     }
 
 
@@ -420,6 +420,10 @@ def _basin_payload(
     if "snapped_lat" in snapped and "snapped_lon" in snapped:
         return basin, (snapped["snapped_lat"], snapped["snapped_lon"])
     return basin, None
+
+
+def _state_name(code: str) -> str:
+    return {j.code: j.name for j in JURISDICTIONS}.get(code, code)
 
 
 def _state_label(code: str) -> str:
