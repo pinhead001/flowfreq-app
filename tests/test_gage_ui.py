@@ -223,7 +223,7 @@ def test_b17c_link_opens_the_gaged_page_in_a_new_window(monkeypatch):
     # A link button (target _blank), so the gage page stays open beside the analysis. The
     # new window is a new session: the site travels in the URL, not in session state.
     link = _b17c(_run(monkeypatch))
-    assert link.url == f"?page=gaged&site={SITE}&run=1"  # and run it on arrival
+    assert link.url == f"?page=flowfrequency&site={SITE}&run=1"  # and run it on arrival
     assert not link.disabled
 
 
@@ -265,7 +265,9 @@ def test_page_plots_the_daily_record(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert any("Daily mean flow" in h.value for h in at.subheader)
-    assert len(_charts(at)) == 2  # daily record, annual peaks
+    assert len(_charts(at)) == 1  # annual peaks
+    # The daily record, in the resizable-brush component (vega_component).
+    assert len(at.get("component_instance")) == 1
 
 
 def test_page_without_daily_values_says_so(monkeypatch):
@@ -435,6 +437,22 @@ def test_a_quick_period_opens_the_chart_zoomed():
     domain = _line(spec)["encoding"]["x"]["scale"]["domain"]["expr"]
     first, last = (int(t.value // 10**6) for t in window)
     assert domain.endswith(f"[{first}, {last}]")
+    # ... and as a box on the strip, whose ends can then be dragged.
+    start, end = _param(spec, "period")["value"]["x"]
+    assert (start["year"], start["month"], start["date"]) == (1929, 3, 2)
+    assert (end["year"], end["month"], end["date"]) == (1929, 3, 4)
+
+
+def test_without_a_quick_period_the_strip_starts_with_no_box():
+    assert "value" not in _param(gage_ui.daily_chart(DAILY).to_dict(), "period")
+
+
+def test_the_daily_chart_is_drawn_with_resizable_period_grips(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(gage_ui, "vega_chart", lambda chart, **kw: seen.update(kw, chart=chart))
+    gage_ui._daily_section({"daily": DAILY}, None)
+    assert seen["resizable"] == ["period"]
+    assert _param(seen["chart"].to_dict(), "period")["select"]["type"] == "interval"
 
 
 def test_csv_of_the_daily_values():

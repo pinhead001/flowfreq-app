@@ -21,6 +21,7 @@ here is the Streamlit UI and the display formatting that serves it.
 streamlit_app.py     the app; a top-level script, not a module with a main()
 ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate`/`run_delineation` (never raise), `coverage_badge`
 gage_ui.py           the gage page (`render(site)`), opened from the map's gage popups; `load_site`/`load_peaks` (never raise)
+vega_component/      daily-chart component: vega-embed with resizable brush grips (`index.html`), `vega_chart()`
 map_component/       the basin map: build-less MapLibre component (`index.html`), `basin_map()`, bundled `states.geojson`
 map_geo.py           point-in-state and basin preparation for the map (pure Python, no GIS dependency)
 tools/               one-off generators, e.g. `build_states_geojson.py` (regenerates `map_component/states.geojson`)
