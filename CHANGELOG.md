@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Plain messages for StreamStats refusals (flowfreq v0.20.0)
+
+Estimate and Delineate show a warning that says what to do, instead of the library's error,
+when StreamStats refuses for a reason that is the point, the basin or the state:
+- a point off the stream network: move it onto the stream (the StreamGrid layer from zoom 13);
+- a basin StreamStats flags regulated: choose a point upstream of the dam or diversion;
+- a state StreamStats does not delineate (FL, MI, NE): no point there can be delineated.
+
+The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
+`RegionNotDelineatedError` and `RegulatedDelineationError`.
+
 ### flowfreq v0.20.0
 
 The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it adds for the app:
