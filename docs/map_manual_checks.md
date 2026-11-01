@@ -62,3 +62,21 @@ All items above checked except the two marked here:
 
 Measured: first map paint 1.37 s after a cold load of `?page=ungaged`; left click to filled
 inputs 0.07 s; style switch 0.12-0.16 s (one Streamlit round trip).
+
+## Gage page (`?page=gage&site=12340500`)
+
+- [ ] Daily mean flow chart draws the whole record, log scale; red dots are the annual peaks;
+      the strip under it shows the record's shape
+- [ ] Dragging across the strip zooms the chart to that period (axis reads "Apr 1979"...) and
+      the flow axis fits it; dragging the shaded box pans; double-click resets
+- [ ] Hovering reads out "Jun 10, 2008: 10,500 cfs" in the top-left corner; recent days add
+      "(provisional)" and draw in orange
+- [ ] "Flow axis: linear" under the chart switches scale and keeps the zoom
+- [ ] "Last 10 years" and "Last water year" zoom the chart, with dashed water-year lines
+- [ ] "Daily values (CSV)" and "Annual peaks (CSV)" download
+- [ ] "Open in Bulletin 17C (Gaged page)" opens a new window that downloads the site and runs
+      Bulletin 17C by itself; the gage page stays open
+- [ ] Map over Flathead Lake (47.9, -114.0): zoom 6.5 reads "Flathead L.", "L. Pend Oreille";
+      zoom 8.5 reads "Flathead Lake", "Flathead River"
+
+Last run 2026-10-31 (Playwright, Chrome 1400x1300): all eight pass, no console errors.
