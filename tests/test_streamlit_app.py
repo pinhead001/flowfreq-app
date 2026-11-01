@@ -557,3 +557,22 @@ def test_a_hand_off_with_run_starts_the_download_once(app_module):
 def test_no_run_flag_no_automatic_download(app_module):
     assert not app_module.auto_run_requested({}, {})
     assert not app_module.auto_run_requested({"run": "yes"}, {})
+
+
+def test_fit_provenance_shows_the_stationarity_screen(app_module, monkeypatch):
+    import gage_ui
+
+    shown = []
+    monkeypatch.setattr(gage_ui, "stationarity_section", shown.append)
+    screen = {"n": 40, "years": (1960, 1999), "flags": ["decreasing trend (p = 0.001)"]}
+    app_module.show_fit_provenance({"parameters": {}, "stationarity": screen})
+    assert shown == [screen]
+
+
+def test_fit_provenance_without_a_screen_shows_none(app_module, monkeypatch):
+    import gage_ui
+
+    shown = []
+    monkeypatch.setattr(gage_ui, "stationarity_section", shown.append)
+    app_module.show_fit_provenance({"parameters": {}, "stationarity": None})
+    assert shown == []

@@ -625,3 +625,29 @@ def test_page_says_why_a_short_record_was_not_screened(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert any("Stationarity screen not run" in c.value for c in at.caption)
+
+
+def _ms_text(day):
+    return str(int(pd.Timestamp(day).value // 10**6))
+
+
+def test_axis_reads_months_over_a_year_and_water_years_over_a_decade():
+    daily = pd.DataFrame(
+        {"flow_cfs": 1.0}, index=pd.date_range("2019-07-01", "2022-02-01", name="date")
+    )
+    axis = _line(gage_ui.daily_chart(daily).to_dict())["encoding"]["x"]["axis"]
+    values, label = axis["values"]["expr"], axis["labelExpr"]
+    two_years, fifteen = str(2 * 365.25 * 86400000), str(15 * 365.25 * 86400000)
+    assert two_years in values and fifteen in values  # chosen by the span in view
+    assert "period.date" in values
+    assert _ms_text("2020-11-01") in values  # month starts, up to two years in view
+    assert _ms_text("2021-04-01") in values  # mid water year, up to fifteen
+    assert "utcFormat(datum.value, '%b')" in label  # "Oct", "Nov" ...
+    assert "utcFormat(datum.value, '%b %Y')" in label  # ... "Jan 2021"
+    assert "'WY ' + utcyear(datum.value)" in label  # April 1 2021 is in WY 2021
+    assert label.endswith("datum.label")  # longer spans keep the "%b %Y" format
+    assert two_years in axis["gridOpacity"]["expr"]  # no grid line mid water year
+
+
+def test_stationarity_section_is_shared_with_the_gaged_page():
+    assert callable(gage_ui.stationarity_section)

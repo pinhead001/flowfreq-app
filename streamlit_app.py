@@ -296,7 +296,7 @@ def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
 
 
 def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
-    """Skew source, peak codes applied and regulation screen for a fitted gage."""
+    """Skew source, peak codes applied, regulation and stationarity screens for a fitted gage."""
     params = ffa_result.get("parameters", {})
     info = ffa_result.get("skew_info") or {}
     source = params.get("regional_skew_source")
@@ -337,6 +337,10 @@ def show_fit_provenance(ffa_result: Dict[str, Any]) -> None:
             st.write(line)
         for reason in site_class.get("basis") or []:
             st.caption(reason)
+
+    screen = ffa_result.get("stationarity")
+    if screen:
+        gage_ui.stationarity_section(screen)
 
 
 def _configure_api_key() -> None:

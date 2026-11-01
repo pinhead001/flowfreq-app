@@ -347,6 +347,8 @@ def _ms(ts: pd.Timestamp) -> int:
 
 #: Water-year lines show while the visible span is under this, in milliseconds.
 _WY_SPAN_MS = 15 * 365.25 * 86400000
+#: Up to this span in view the daily chart labels months; beyond, water years.
+_MONTH_SPAN_MS = 2 * 365.25 * 86400000
 
 
 #: The flow axis follows the chart's own log/linear switch (the ``flowscale`` parameter).
@@ -418,11 +420,28 @@ def daily_chart(
         empty=False,
     )  # fmt: skip
 
+    # Labels by the span in view: months over a year or two ("Oct", "Jan 2026"), one
+    # "WY 2017" mid water year (between the dashed October lines) over a decade, else
+    # Vega's own ticks. Times are UTC milliseconds, as in ``shown``.
+    span = f"(({shown})[1] - ({shown})[0])"
+    months = ", ".join(str(_ms(t)) for t in pd.date_range(days[0], days[-1], freq="MS"))
+    mid_wy = ", ".join(str(_ms(t)) for t in pd.date_range(days[0], days[-1], freq="YS-APR"))
+    by_months, by_wy = f"{span} <= {_MONTH_SPAN_MS}", f"{span} <= {_WY_SPAN_MS}"
     x = alt.X(
         "date:T",
         title=None,
         scale=alt.Scale(domain=alt.ExprRef(shown)),
-        axis=alt.Axis(format="%b %Y", labelOverlap=True),
+        axis=alt.Axis(
+            format="%b %Y",
+            labelOverlap=True,
+            values=alt.ExprRef(f"{by_months} ? [{months}] : {by_wy} ? [{mid_wy}] : null"),
+            labelExpr=(
+                f"{by_months} ? (utcmonth(datum.value) == 0 ? "
+                "utcFormat(datum.value, '%b %Y') : utcFormat(datum.value, '%b')) : "
+                f"{by_wy} ? 'WY ' + utcyear(datum.value) : datum.label"
+            ),
+            gridOpacity=alt.ExprRef(f"{by_months} || !({by_wy}) ? 1 : 0"),
+        ),
     )
 
     def flow_axis(field: str) -> alt.Y:
@@ -465,7 +484,6 @@ def daily_chart(
     octobers = pd.date_range(days[0], days[-1], freq="YS-OCT", name="date")
     if len(octobers):
         # Water years, shown while under 15 years are in view: across a century, a blur.
-        span = f"(({shown})[1] - ({shown})[0])"
         layers.append(
             alt.Chart(octobers.to_frame(index=False))
             .mark_rule(
@@ -624,8 +642,12 @@ def change_year(screen: Dict[str, Any]) -> Optional[int]:
     return int(year)
 
 
-def _stationarity_section(screen: Dict[str, Any]) -> None:
-    """The screen's flags under the peak chart, or why there are none."""
+def stationarity_section(screen: Dict[str, Any]) -> None:
+    """A stationarity screen's flags, or why there are none.
+
+    ``screen`` is :func:`screen_peaks`'s result on this page, or ``run_ffa``'s
+    ``stationarity`` on the Gaged page: the same dict either way.
+    """
     if "error" in screen:
         st.caption(f"Stationarity screen not run: {screen['error']}.")
         return
@@ -776,7 +798,7 @@ def render(site_no: str) -> None:
             "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Gaged "
             "page."
         )
-        _stationarity_section(screen)
+        stationarity_section(screen)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
