@@ -615,7 +615,8 @@ def test_choosing_a_page_puts_it_in_the_url():
     _page_radio(at).set_value("Ungaged site")
     at.run()
     assert not at.exception
-    assert at.query_params["page"] == ["ungaged"]
+    # AppTest gives a list on some Streamlit versions and a string on others.
+    assert at.query_params["page"] in ("ungaged", ["ungaged"])
     assert "site" not in at.query_params and "run" not in at.query_params
 
 
