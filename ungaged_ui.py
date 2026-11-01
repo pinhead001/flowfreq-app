@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import numbers
+import re
 import threading
 from collections import OrderedDict
 from functools import lru_cache
@@ -31,7 +32,12 @@ from flowfreq import OverlappingRegionsError, estimate_at_site
 from flowfreq.regression import JURISDICTIONS, available_states, nss_snapshot_states
 from flowfreq.regression.equations import OutOfRangeError
 from flowfreq.regression.library import EquationsUnavailable
-from flowfreq.streamstats import delineate_and_get_characteristics
+from flowfreq.streamstats import (
+    RegionNotDelineatedError,
+    RegulatedDelineationError,
+    UnsnappablePointError,
+    delineate_and_get_characteristics,
+)
 from flowfreq.ungaged import SiteEstimate
 
 from map_component import MODES, basin_map
@@ -126,6 +132,62 @@ def _streamstats_cache() -> BasinCache:
     return BasinCache()
 
 
+#: Outcome kinds for a StreamStats refusal that is not an app failure: the point, the
+#: basin or the state is the problem. Shown as a warning with what to do instead.
+REFUSAL_KINDS = ("unsnappable", "regulated", "unsupported_region")
+
+
+def streamstats_refusal(exc: Exception, state: str) -> Optional[Dict[str, str]]:
+    """A plain-language outcome for a StreamStats refusal, or None for any other error.
+
+    Parameters
+    ----------
+    exc : Exception
+        What :func:`flowfreq.estimate_at_site` or the delineation raised.
+    state : str
+        Jurisdiction code, for the message.
+
+    Returns
+    -------
+    dict or None
+        ``{"error": message, "kind": kind, "detail": the library's own message}`` with
+        ``kind`` in :data:`REFUSAL_KINDS`.
+    """
+    if isinstance(exc, RegionNotDelineatedError):
+        return {
+            "error": (
+                f"StreamStats does not delineate basins in {_state_label(state)}: its stream "
+                "grid does not cover the state, so no point there can be delineated. The "
+                "basin characteristics would have to come from somewhere else."
+            ),
+            "kind": "unsupported_region",
+            "detail": str(exc),
+        }
+    if isinstance(exc, RegulatedDelineationError):
+        found = re.search(r"REGULATED:?\s*(.*)$", str(exc), re.IGNORECASE)
+        what = found.group(1).strip().title() if found and found.group(1).strip() else ""
+        return {
+            "error": (
+                "StreamStats flags this basin as regulated"
+                + (f" ({what})" if what else "")
+                + ". The regression equations are for unregulated basins: choose a point "
+                "upstream of the dam or diversion."
+            ),
+            "kind": "regulated",
+            "detail": str(exc),
+        }
+    if isinstance(exc, UnsnappablePointError):
+        return {
+            "error": (
+                "This point is not on StreamStats' stream network. Move it onto the stream: "
+                "from zoom 13 the StreamGrid layer shows the cells that snap."
+            ),
+            "kind": "unsnappable",
+            "detail": str(exc),
+        }
+    return None
+
+
 def run_estimate(
     lat: float,
     lon: float,
@@ -159,7 +221,8 @@ def run_estimate(
         ``{"estimate": SiteEstimate}``, or ``{"error": str, "kind": str}`` with ``kind``
         one of ``overlap`` (which also carries ``candidates``, the library's
         ``(nss_code, region_name, year)`` tuples), ``equations``, ``out_of_range``,
-        ``input``, ``network`` or ``unexpected``.
+        one of :data:`REFUSAL_KINDS` (:func:`streamstats_refusal`), ``input``, ``network``
+        or ``unexpected``.
     """
     try:
         estimate = estimate_at_site(
@@ -184,7 +247,7 @@ def run_estimate(
     except KeyError as exc:  # unknown jurisdiction: KeyError quotes str(); use the message
         return {"error": str(exc.args[0]) if exc.args else "unknown key", "kind": "input"}
     except (ValueError, LookupError) as exc:
-        return {"error": str(exc), "kind": "input"}
+        return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
         return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
@@ -211,14 +274,15 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     -------
     dict
         ``{"basin": Feature, "snap": (lat, lon), "area_sq_mi": float}``, or
-        ``{"error": str, "kind": str}`` with ``kind`` one of ``input`` (including an
-        unsnappable point, a degenerate delineation and a region StreamStats does not
-        serve), ``network`` or ``unexpected``.
+        ``{"error": str, "kind": str}`` with ``kind`` one of :data:`REFUSAL_KINDS` (an
+        unsnappable point, a regulated basin, a state StreamStats does not delineate;
+        :func:`streamstats_refusal`), ``input`` (a degenerate delineation, bad input),
+        ``network`` or ``unexpected``.
     """
     try:
         ws = delineate_and_get_characteristics(state, lat, lon, cache=_streamstats_cache())
-    except ValueError as exc:  # unsnappable, degenerate, unsupported region, bad input
-        return {"error": str(exc), "kind": "input"}
+    except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
+        return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
         return {"error": f"StreamStats request failed: {exc}", "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
@@ -617,5 +681,7 @@ def render() -> None:
         if st.button("Run with this equation set") and chosen is not None:
             _store(inputs, region=chosen[0])
             st.rerun()
+    elif outcome.get("kind") in REFUSAL_KINDS:
+        st.warning(outcome["error"])
     else:
         st.error(outcome["error"])

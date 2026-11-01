@@ -22,6 +22,8 @@ from flowfreq.streamstats import (
     Characteristic,
     DegenerateDelineationError,
     Provenance,
+    RegionNotDelineatedError,
+    RegulatedDelineationError,
     SnapResult,
     UnsnappablePointError,
     UnsupportedRegionError,
@@ -207,7 +209,7 @@ def test_run_delineation_without_a_polygon_is_an_input_error(monkeypatch):
 @pytest.mark.parametrize(
     "exc, kind",
     [
-        (UnsnappablePointError("no stream within reach of the point"), "input"),
+        (UnsnappablePointError("no stream within reach of the point"), "unsnappable"),
         (DegenerateDelineationError("degenerate watershed"), "input"),
         (UnsupportedRegionError("FL has no StreamStats service"), "input"),
         (ValueError("bad coordinate"), "input"),
@@ -222,7 +224,8 @@ def test_run_delineation_never_raises(monkeypatch, exc, kind):
     monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
     out = ungaged_ui.run_delineation(46.93, -113.97, "MT")
     assert out["kind"] == kind
-    assert str(exc) in out["error"]
+    # A refusal reads plainly and keeps the library's message as its detail.
+    assert str(exc) in (out["detail"] if kind in ungaged_ui.REFUSAL_KINDS else out["error"])
     assert "basin" not in out
 
 
@@ -709,3 +712,61 @@ def test_basin_extras_computed_once_per_basin(monkeypatch, recorders):
     at.run()
     assert not at.exception
     assert len(calls) == 1
+
+
+# StreamStats refusals that are the point, the basin or the state, not an app failure
+# (flowfreq v0.20.0): a plain message and a warning, from both Estimate and Delineate.
+REFUSALS = [
+    (
+        RegionNotDelineatedError(
+            "StreamStats' snap service has no stream grid for region 'MI' (No such region)"
+        ),
+        "unsupported_region",
+        "does not delineate basins in",
+    ),
+    (
+        RegulatedDelineationError(
+            "StreamStats delineation warning at (46.37, -100.93) in region 'ND': "
+            "REGULATED: CANNONBALL RIVER"
+        ),
+        "regulated",
+        "regulated (Cannonball River)",
+    ),
+    (
+        UnsnappablePointError("StreamStats could not snap (55.39, -131.19) in region 'AK'"),
+        "unsnappable",
+        "not on StreamStats' stream network",
+    ),
+]
+
+
+@pytest.mark.parametrize("exc, kind, text", REFUSALS)
+def test_estimate_refusals_read_plainly(monkeypatch, exc, kind, text):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", boom)
+    out = ungaged_ui.run_estimate(44.4, -85.7, "MI", [], False)
+    assert out["kind"] == kind and kind in ungaged_ui.REFUSAL_KINDS
+    assert text in out["error"]
+
+
+@pytest.mark.parametrize("exc, kind, text", REFUSALS)
+def test_delineation_refusals_read_plainly(monkeypatch, exc, kind, text):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(ungaged_ui, "delineate_and_get_characteristics", boom)
+    out = ungaged_ui.run_delineation(44.4, -85.7, "MI")
+    assert out["kind"] == kind
+    assert text in out["error"]
+
+
+def test_unsupported_region_names_the_state():
+    exc = RegionNotDelineatedError("no stream grid for region 'NE'")
+    out = ungaged_ui.streamstats_refusal(exc, "NE")
+    assert "Nebraska" in out["error"]
+
+
+def test_other_value_errors_stay_input_errors():
+    assert ungaged_ui.streamstats_refusal(ValueError("bad coordinate"), "TN") is None
