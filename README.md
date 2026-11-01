@@ -58,7 +58,7 @@ the library.
 `requirements.txt` pins a tag:
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.19.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.20.0
 ```
 
 To pick up library changes: land them in `flowfreq`, tag a release there, then bump that
