@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Chart library served by the app
+
+- The gage page's daily chart loads vega 6.4.0, vega-lite 6.4.1 and vega-embed 7.3.0 from `vega_component/vendor/` (BSD-3 licences alongside) instead of cdn.jsdelivr.net; the files are the published ones, with the same SRI hashes, which a test recomputes.
+
 ### Resizable period on the gage page; Flow Frequency page
 
 - **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
