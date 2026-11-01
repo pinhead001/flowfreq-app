@@ -41,6 +41,9 @@ function fitFrame() {
 // moves that edge while the grip is dragged. Sliding (drag on period_brush), wheel zoom and
 // double-click clear are Vega-Lite's own and untouched.
 // ---------------------------------------------------------------------------
+// The brush and its grips: Vega-Lite's grey box (#333 at 12.5 %) and the strip's blue grips
+// vanish against a dark background and the blue strip, so dark mode draws them in red.
+const BRUSH_COLORS = { light: "#3182bd", dark: "#ff4b4b" };
 const GRIP_WIDTH = 8;  // px; the grab area straddles the edge
 const MIN_SPAN = 4;    // px; an edge cannot be dragged past the other one
 
@@ -53,12 +56,30 @@ function findGroup(node, signalName) {
   return null;
 }
 
-function addGrips(vgSpec, name) {
+function recolor(mark, color) {
+  // Every fill and stroke colour in the mark's encoding, single values and test lists alike.
+  for (const set of Object.values(mark.encode || {})) {
+    for (const channel of ["fill", "stroke"]) {
+      const entry = set[channel];
+      for (const rule of Array.isArray(entry) ? entry : entry ? [entry] : []) {
+        if (typeof rule.value === "string" && rule.value !== "transparent") rule.value = color;
+      }
+    }
+  }
+}
+
+function addGrips(vgSpec, name, dark) {
   const xs = `${name}_x`;
   const group = findGroup(vgSpec, xs);
   if (!group) {
     console.warn(`vega_chart: no interval selection ${name} on x; no grips added`);
     return;
+  }
+  const color = dark ? BRUSH_COLORS.dark : BRUSH_COLORS.light;
+  if (dark) {
+    for (const mark of group.marks || []) {
+      if (mark.name === `${name}_brush` || mark.name === `${name}_brush_bg`) recolor(mark, color);
+    }
   }
   const left = `${name}_grip_l`;
   const right = `${name}_grip_r`;
@@ -90,7 +111,7 @@ function addGrips(vgSpec, name) {
       enter: {
         y: { value: 0 },
         y2: { field: { group: "height" } },
-        fill: { value: "#3182bd" },
+        fill: { value: color },
         cursor: { value: "ew-resize" },
         tooltip: { value: "Drag to change the period" },
       },
@@ -126,8 +147,10 @@ function themed(spec, theme) {
 }
 
 async function onRender(args, theme) {
-  if (args.spec_id === shownId) return;
-  shownId = args.spec_id;
+  // A theme switch redraws too: the brush colour and the text follow it.
+  const id = `${args.spec_id}:${theme && theme.base}`;
+  if (id === shownId) return;
+  shownId = id;
   send("streamlit:setFrameHeight", { height: args.height });
   const holder = document.getElementById("chart");
   const error = document.getElementById("error");
@@ -144,7 +167,8 @@ async function onRender(args, theme) {
       mode: "vega-lite",
       actions: { export: true, source: false, compiled: false, editor: false },
       patch: (vgSpec) => {
-        for (const name of args.resizable || []) addGrips(vgSpec, name);
+        const dark = Boolean(theme && theme.base === "dark");
+        for (const name of args.resizable || []) addGrips(vgSpec, name, dark);
         return vgSpec;
       },
     });
