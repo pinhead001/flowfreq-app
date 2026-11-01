@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Shorter network errors
+
+- A failed web request reads as one line naming the service -- "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov", "could not connect to api.waterdata.usgs.gov" -- instead of quoting the whole URL with its query string. The full text goes to the log. Applies to the Ungaged page's Delineate and Estimate, and to the Flow Frequency page's regional-skew lookup, peak download and processing errors.
+
 ### Resizable period on the gage page; Flow Frequency page
 
 - **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
