@@ -16,6 +16,38 @@ session-by-session detail is ever needed.
   verified at v0.15.0 on 2026-10-25 (earlier: 29 passed at v0.6.1 and v0.7.0).
 - No drift open right now. New drift goes here as it's found.
 
+## Next steps (2026-11-01)
+
+Open PRs, each green in CI and independent of the others; merge in any order. Each adds a
+section at the top of CHANGELOG.md's Unreleased, so every merge after the first needs that
+one-hunk conflict resolved.
+
+- #25 daily chart labels by span (months / "WY 2017"), ticks at local midnights.
+- #27 page radio and gage number survive a page round trip; the page goes in the URL.
+- #28 network errors name the service ("502 Bad Gateway from streamstats.usgs.gov").
+- #29 MapLibre and the label glyphs served from `map_component/` (adds a root `.gitattributes`).
+- #30 vega, vega-lite and vega-embed served from `vega_component/`. Once #29 and #30 are both
+  in, delete #29's TODO line "Self-host the Vega bundles".
+- #26 (another session): summary hydrograph, flow-duration curve, stationarity report.
+
+Then, roughly in order of value:
+
+1. **Estimate, live.** Delineate was checked live on 2026-11-01 (see
+   `docs/map_manual_checks.md`); Estimate still fails because StreamStats' ss-hydro returns
+   502. Re-run the Estimate and "Re-run with WY" checks when it is back.
+2. **#24's resize grips in a browser.** The vega component draws (checked 2026-11-01), but
+   dragging a grip to resize the period box has not been watched in a real browser.
+3. **Browser Back** after an in-app page switch (below): `st.navigation`/`st.Page`. #27 made
+   the radio and the URL agree; Back itself still does not rerun.
+4. **`use_container_width` deprecation:** move to `width="stretch"` and raise the Streamlit
+   floor from 1.40 (every chart in the app).
+5. **Stationarity follow-ups:** the flags in the ZIP export and the multi-gage comparison;
+   NID/NLCD basin events for attribution (needs the delineated basin).
+6. **Library questions for flowfreq:** 02087500's 1968 change point is reported with no
+   candidate cause although 45 of its peaks carry code 6 (`attribute_change_point`'s 5-year
+   window?); `USGSgage.peak_summary()` to cut the gage page's repeated site lookup.
+7. **Cosmetic:** the gage page's peak chart rounds its year axis out (to 2040 for Lees Ferry).
+
 ## Roadmap (agreed 2026-10-31)
 
 One PR per phase, in this order. The follow-up entries below hold the detail.
@@ -58,10 +90,8 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   536 member/exclude rows at HUC2, 4, 8, 10 and 12 with per-state validity; a build-time WBD
   query per level plus simplification would give the polygons, but the rules must be drawn
   exactly as `regional_skew_at_huc` applies them, or the map would mislead.
-- **Live re-check of Delineate/Estimate on the map.** StreamStats' `ss-hydro` returned 502
-  everywhere on 2026-10-31, so the live path from the context menu to a drawn basin was not
-  seen end to end (the component draws an injected polygon correctly; the page shows the
-  outage as an error). Re-run the two unchecked items in `docs/map_manual_checks.md`.
+- **Live re-check of Estimate on the map.** Delineate passed live on 2026-11-01; Estimate and
+  "Re-run with WY" wait for StreamStats' `ss-hydro`, which still returned 502 that day.
 - **Gage page, next.** Summary hydrograph and flow-duration curve from the daily record; raster hydrograph; the Bulletin 17C curve in place; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window. Stationarity flags under the peak chart (v0.20.0). The screen with the Flow Frequency page's Bulletin 17C results. Not yet: the library's one-page `stationarity_report`, and NID/NLCD basin events for attribution (need the delineated basin).
 - **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
   in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,
