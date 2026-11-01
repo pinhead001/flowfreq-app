@@ -357,6 +357,8 @@ def _ms(ts: pd.Timestamp) -> int:
 
 #: Water-year lines show while the visible span is under this, in milliseconds.
 _WY_SPAN_MS = 15 * 365.25 * 86400000
+#: Up to this span in view the daily chart labels months; beyond, water years.
+_MONTH_SPAN_MS = 2 * 365.25 * 86400000
 
 
 #: The flow axis follows the chart's own log/linear switch (the ``flowscale`` parameter).
@@ -435,11 +437,33 @@ def daily_chart(
         empty=False,
     )  # fmt: skip
 
+    # Labels by the span in view: months over a year or two ("Oct", "Jan 2026"), one
+    # "WY 2017" mid water year (between the dashed October lines) over a decade, else
+    # Vega's own ticks. Ticks are local midnights built in the browser (``datetime``
+    # takes a 0-based month), as Vega reads the dates and the brush works in local time.
+    span = f"(({shown})[1] - ({shown})[0])"
+
+    def ticks(freq: str) -> str:
+        found = pd.date_range(days[0], days[-1], freq=freq)
+        return ", ".join(f"datetime({t.year}, {t.month - 1}, 1)" for t in found)
+
+    months, mid_wy = ticks("MS"), ticks("YS-APR")
+    by_months, by_wy = f"{span} <= {_MONTH_SPAN_MS}", f"{span} <= {_WY_SPAN_MS}"
     x = alt.X(
         "date:T",
         title=None,
         scale=alt.Scale(domain=alt.ExprRef(shown)),
-        axis=alt.Axis(format="%b %Y", labelOverlap=True),
+        axis=alt.Axis(
+            format="%b %Y",
+            labelOverlap=True,
+            values=alt.ExprRef(f"{by_months} ? [{months}] : {by_wy} ? [{mid_wy}] : null"),
+            labelExpr=(
+                f"{by_months} ? (month(datum.value) == 0 ? "
+                "timeFormat(datum.value, '%b %Y') : timeFormat(datum.value, '%b')) : "
+                f"{by_wy} ? 'WY ' + year(datum.value) : datum.label"
+            ),
+            gridOpacity=alt.ExprRef(f"{by_months} || !({by_wy}) ? 1 : 0"),
+        ),
     )
 
     def flow_axis(field: str) -> alt.Y:
@@ -482,7 +506,6 @@ def daily_chart(
     octobers = pd.date_range(days[0], days[-1], freq="YS-OCT", name="date")
     if len(octobers):
         # Water years, shown while under 15 years are in view: across a century, a blur.
-        span = f"(({shown})[1] - ({shown})[0])"
         layers.append(
             alt.Chart(octobers.to_frame(index=False))
             .mark_rule(

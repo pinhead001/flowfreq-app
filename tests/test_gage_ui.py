@@ -646,6 +646,31 @@ def test_page_says_why_a_short_record_was_not_screened(monkeypatch):
     assert any("Stationarity screen not run" in c.value for c in at.caption)
 
 
+def test_axis_reads_months_over_a_year_and_water_years_over_a_decade():
+    daily = pd.DataFrame(
+        {"flow_cfs": 1.0}, index=pd.date_range("2019-07-01", "2022-02-01", name="date")
+    )
+    axis = _line(gage_ui.daily_chart(daily).to_dict())["encoding"]["x"]["axis"]
+    values, label = axis["values"]["expr"], axis["labelExpr"]
+    two_years, fifteen = str(2 * 365.25 * 86400000), str(15 * 365.25 * 86400000)
+    assert two_years in values and fifteen in values  # chosen by the span in view
+    assert "period.date" in values
+    # Ticks are local midnights, built in the browser, as Vega reads the dates and the
+    # brush works in local time: a UTC tick at Oct 1 falls outside a brushed water year.
+    assert "datetime(2020, 10, 1)" in values  # 1 November 2020: month starts, up to two years
+    assert "datetime(2021, 3, 1)" in values  # 1 April 2021: mid water year, up to fifteen
+    assert "timeFormat(datum.value, '%b')" in label  # "Oct", "Nov" ...
+    assert "timeFormat(datum.value, '%b %Y')" in label  # ... "Jan 2021"
+    assert "'WY ' + year(datum.value)" in label  # April 1 2021 is in WY 2021
+    assert "utc" not in label + values
+    assert label.endswith("datum.label")  # longer spans keep the "%b %Y" format
+    assert two_years in axis["gridOpacity"]["expr"]  # no grid line mid water year
+
+
+def test_stationarity_section_is_shared_with_the_gaged_page():
+    assert callable(gage_ui.stationarity_section)
+
+
 # --- Summary hydrograph, flow-duration curve, stationarity report --------------------
 
 _DAYS = pd.date_range("2000-10-01", "2012-09-30", freq="D", name="date")
