@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>chart</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  body { font-family: "Source Sans Pro", "Source Sans 3", sans-serif; }
+  #chart { width: 100%; }
+  #chart .vega-bindings { font-size: 14px; padding: 4px 0 0 4px; }
+  #error { color: #b00020; font-size: 14px; white-space: pre-wrap; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/vega@6.4.0/build/vega.min.js" integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1/build/vega-lite.min.js" integrity="sha384-QtG7pnWvq1Tk0Rcvl53B1TEVw7U1PUqfciCz3XMUqSmi1fNpJwiv5ml+m5NeOOzH" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@7.3.0/build/vega-embed.min.js" integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="chart"></div>
+<div id="error"></div>
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// Streamlit component protocol
+// ---------------------------------------------------------------------------
+function send(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type }, data), "*");
+}
+function fitFrame() {
+  send("streamlit:setFrameHeight", { height: Math.ceil(document.body.scrollHeight) + 2 });
+}
+
+// ---------------------------------------------------------------------------
+// Edge grips for a Vega-Lite interval brush on x.
+//
+// Vega-Lite compiles a selection "period" drawn on a unit into that unit's group: a pixel
+// range signal period_x (what the brush covers; period_date and the selection store follow
+// it), a brush mark period_brush, and a pointerdown on the group, outside period_brush,
+// that starts a new brush. The patch adds a grip mark at each end of the brush, keeps the
+// grips' pointerdown from starting a new brush, and gives period_x a handler per grip that
+// moves that edge while the grip is dragged. Sliding (drag on period_brush), wheel zoom and
+// double-click clear are Vega-Lite's own and untouched.
+// ---------------------------------------------------------------------------
+const GRIP_WIDTH = 8;  // px; the grab area straddles the edge
+const MIN_SPAN = 4;    // px; an edge cannot be dragged past the other one
+
+function findGroup(node, signalName) {
+  if ((node.signals || []).some((s) => s.name === signalName)) return node;
+  for (const mark of node.marks || []) {
+    const found = findGroup(mark, signalName);
+    if (found) return found;
+  }
+  return null;
+}
+
+function addGrips(vgSpec, name) {
+  const xs = `${name}_x`;
+  const group = findGroup(vgSpec, xs);
+  if (!group) {
+    console.warn(`vega_chart: no interval selection ${name} on x; no grips added`);
+    return;
+  }
+  const left = `${name}_grip_l`;
+  const right = `${name}_grip_r`;
+  // A grip's pointerdown must not start a new brush: extend Vega-Lite's own test that
+  // keeps a pointerdown on the brush from starting one.
+  const notBrush = `event.item.mark.name !== "${name}_brush"`;
+  const notGrip = `${notBrush} && event.item.mark.name !== "${left}" && event.item.mark.name !== "${right}"`;
+  group.signals = JSON.parse(JSON.stringify(group.signals).split(JSON.stringify(notBrush).slice(1, -1))
+    .join(JSON.stringify(notGrip).slice(1, -1)));
+
+  const lo = `min(${xs}[0], ${xs}[1])`;
+  const hi = `max(${xs}[0], ${xs}[1])`;
+  const at = "clamp(x(unit), 0, width)";
+  const drag = (grip) => ({
+    source: "window", type: "pointermove", consume: true,
+    between: [{ markname: grip, type: "pointerdown" }, { source: "window", type: "pointerup" }],
+  });
+  const signal = group.signals.find((s) => s.name === xs);
+  signal.on = (signal.on || []).concat([
+    { events: [drag(left)], update: `[min(${at}, ${hi} - ${MIN_SPAN}), ${hi}]` },
+    { events: [drag(right)], update: `[${lo}, max(${at}, ${lo} + ${MIN_SPAN})]` },
+  ]);
+
+  const shown = `length(${xs}) == 2 && ${xs}[0] !== ${xs}[1]`;
+  const grip = (markName, edge) => ({
+    type: "rect",
+    name: markName,
+    encode: {
+      enter: {
+        y: { value: 0 },
+        y2: { field: { group: "height" } },
+        fill: { value: "#3182bd" },
+        cursor: { value: "ew-resize" },
+        tooltip: { value: "Drag to change the period" },
+      },
+      update: {
+        xc: { signal: `${shown} ? ${edge} : 0` },
+        width: { signal: `${shown} ? ${GRIP_WIDTH} : 0` },
+        fillOpacity: { value: 0.45 },
+      },
+    },
+  });
+  // Last, so the grips sit above the brush and receive the pointer first.
+  group.marks = (group.marks || []).concat([grip(left, lo), grip(right, hi)]);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+let shownId = null;
+let view = null;
+
+function themed(spec, theme) {
+  if (!theme) return spec;
+  const text = theme.textColor || "#31333F";
+  const config = Object.assign({}, spec.config || {});
+  config.background = "transparent";
+  config.axis = Object.assign({ labelColor: text, titleColor: text, domainColor: text, tickColor: text },
+    config.axis || {});
+  config.legend = Object.assign({ labelColor: text, titleColor: text }, config.legend || {});
+  config.title = Object.assign({ color: text }, config.title || {});
+  config.text = Object.assign({ color: text }, config.text || {});
+  document.body.style.color = text;
+  return Object.assign({}, spec, { config });
+}
+
+async function onRender(args, theme) {
+  if (args.spec_id === shownId) return;
+  shownId = args.spec_id;
+  send("streamlit:setFrameHeight", { height: args.height });
+  const holder = document.getElementById("chart");
+  const error = document.getElementById("error");
+  error.textContent = "";
+  if (view) { view.finalize(); view = null; }
+  holder.innerHTML = "";
+  if (typeof vegaEmbed === "undefined") {
+    error.textContent = "The chart library could not be loaded from cdn.jsdelivr.net.";
+    fitFrame();
+    return;
+  }
+  try {
+    const result = await vegaEmbed(holder, themed(args.spec, theme), {
+      mode: "vega-lite",
+      actions: { export: true, source: false, compiled: false, editor: false },
+      patch: (vgSpec) => {
+        for (const name of args.resizable || []) addGrips(vgSpec, name);
+        return vgSpec;
+      },
+    });
+    view = result.view;
+  } catch (err) {
+    error.textContent = `The chart could not be drawn: ${err && err.message ? err.message : err}`;
+  }
+  fitFrame();
+}
+
+new ResizeObserver(fitFrame).observe(document.body);
+window.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "streamlit:render") {
+    onRender(event.data.args, event.data.theme);
+  }
+});
+send("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>

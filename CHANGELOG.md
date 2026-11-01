@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Resizable period on the gage page; Flow Frequency page
+
+- **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
+  or shorten the period shown. Dragging the box still slides it, and double-click still
+  shows the whole record. A quick period (last year, 10 years ...) now opens as a box too,
+  so its ends can be dragged. The chart is drawn by `vega_component`, a build-less
+  vega-embed component (scripts from jsDelivr, pinned with SRI hashes). It patches the
+  compiled Vega-Lite to add a grip at each end of the brush, which Vega-Lite itself cannot
+  resize.
+- **Gaged page renamed Flow Frequency.** `?page=flowfrequency` opens it; the old
+  `?page=gaged` links still land there.
+- **Flow Frequency page:** the y axis defaults to log (the "Per Plot" boxes start ticked
+  too). The stationarity screen of the fitted peaks (`run_ffa`'s `stationarity`) is shown
+  with the Bulletin 17C results, as on the gage page.
+- Labels: the skew source *Unsourced fallback* is now *Nationwide (-0.302)* (still warned
+  as having no located source), and *Analyze anyway (regulated gage)* is now *Analyze
+  regulated gage*.
+
 ### Delineate without ss-hydro
 
 The map's *Delineate* uses `flowfreq.streamstats.delineate_watershed`: the polygon from

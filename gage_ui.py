@@ -3,7 +3,7 @@
 ``?page=gage&site=NNNNNNNN`` lands here. The page shows the site (name, drainage area,
 state, HUC, location), its periods of record for daily flow and annual peaks, the daily
 record (zoomable to a period of interest) and the annual peaks as charts, a stationarity
-screen of the peaks, and the ways on: Bulletin 17C on the Gaged page (in a new window),
+screen of the peaks, and the ways on: Bulletin 17C on the Flow Frequency page (in a new window),
 the USGS pages, the basin map. All
 data comes from the flowfreq library (:class:`flowfreq.usgs.USGSgage`);
 this module only formats it.
@@ -27,6 +27,8 @@ from flowfreq.stationarity import stationarity_screen
 from flowfreq.usgs import USGSgage
 from flowfreq.waterdata import download_daily
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+from vega_component import vega_chart
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +370,8 @@ def daily_chart(
     """The daily record: a detail view over a strip showing the whole record.
 
     Drag across the strip to zoom the detail to that period, drag the shaded box to move
-    along the record, double-click the strip to see it all again. Hovering the detail
+    along the record, drag either end of the box to lengthen or shorten the period
+    (:mod:`vega_component` adds the grips), double-click the strip to see it all again. Hovering the detail
     reads out the day and its flow; dashed lines mark water years (October 1) once zoomed;
     red dots are the annual peaks. A switch under the chart toggles log and linear. All of
     it happens in the browser, without a rerun, so a zoomed period survives the switch.
@@ -408,9 +411,15 @@ def daily_chart(
         value="log" if log else "linear",
         bind=alt.binding_radio(options=["log", "linear"], name="Flow axis: "),
     )
-    zoom = alt.selection_interval(encodings=["x"], name="period")
+    # A quick period opens as a box on the strip, so its edges can be dragged too.
+    zoom = alt.selection_interval(
+        encodings=["x"],
+        name="period",
+        **({"value": {"x": [_datetime(period[0]), _datetime(period[1])]}} if period else {}),
+    )
     # What the detail shows: the brushed period, else the quick period, else everything.
-    # Not a selection's starting value: Streamlit resets selections when it draws a chart.
+    # The domain falls back to the quick period too, so the detail opens zoomed even
+    # before the selection's starting value has reached the store.
     lo, hi = period if period else (days[0], days[-1])
     shown = f"period.date ? period.date : [{_ms(lo)}, {_ms(hi)}]"
     hover = alt.selection_point(
@@ -511,6 +520,11 @@ def daily_chart(
     return alt.vconcat(detail, overview, spacing=6, autosize=fit).add_params(flowscale)
 
 
+def _datetime(when: pd.Timestamp) -> alt.DateTime:
+    # A date as Vega-Lite's DateTime, for a selection's starting value.
+    return alt.DateTime(year=when.year, month=when.month, date=when.day)
+
+
 def _peak_dots(
     peaks: Optional[pd.DataFrame], first: pd.Timestamp, last: pd.Timestamp
 ) -> Optional[pd.DataFrame]:
@@ -578,7 +592,7 @@ SCREEN_ALPHA = 0.05
 def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
     """The library's stationarity screen of an annual peak record; never raises.
 
-    The same input ``run_ffa`` screens on the Gaged page: every peak with its
+    The same input ``run_ffa`` screens on the Flow Frequency page: every peak with its
     qualification codes (so a change point can be attributed), in log10 when every peak
     is positive.
 
@@ -624,8 +638,9 @@ def change_year(screen: Dict[str, Any]) -> Optional[int]:
     return int(year)
 
 
-def _stationarity_section(screen: Dict[str, Any]) -> None:
-    """The screen's flags under the peak chart, or why there are none."""
+def stationarity_section(screen: Dict[str, Any]) -> None:
+    """A stationarity screen's flags, or why there are none: under the gage page's peak
+    chart, and with the Flow Frequency page's Bulletin 17C results."""
     if "error" in screen:
         st.caption(f"Stationarity screen not run: {screen['error']}.")
         return
@@ -671,14 +686,14 @@ def _actions(site_no: str, can_run: bool) -> None:
     col_run, col_links = st.columns([1, 2], vertical_alignment="center")
     # A link, so the analysis opens in a new window (or tab, as the browser prefers) and
     # this page stays as it is. The new window is a new session: the site travels in the
-    # URL, which the Gaged page reads as a hand-off; run=1 starts the analysis there.
+    # URL, which the Flow Frequency page reads as a hand-off; run=1 starts the analysis there.
     col_run.link_button(
-        "Open in Bulletin 17C (Gaged page)",
-        f"?page=gaged&site={site_no}&run=1",
+        "Open in Bulletin 17C (Flow Frequency page)",
+        f"?page=flowfrequency&site={site_no}&run=1",
         type="primary",
         disabled=not can_run,
         help=(
-            "Opens the Gaged page in a new window and runs Bulletin 17C on this site there."
+            "Opens the Flow Frequency page in a new window and runs Bulletin 17C on this site there."
             if can_run
             else "Needs an annual peak record."
         ),
@@ -703,16 +718,17 @@ def _daily_section(daily: Dict[str, Any], peaks: Optional[pd.DataFrame]) -> None
     window = period_window(choice or PERIODS[0], frame.index.min(), frame.index.max())
     # A key per period: Streamlit keeps a chart's view when only its parameters change,
     # which would ignore the new period's starting zoom. A new key draws a new chart.
-    st.altair_chart(
+    vega_chart(
         daily_chart(frame, peaks=peaks, period=window),
-        use_container_width=True,
+        resizable=["period"],
+        height=440,
         key=f"daily_chart_{PERIODS.index(choice) if choice in PERIODS else 0}",
     )
     st.caption(
         "Daily mean flow as USGS publishes it, provisional values included; red dots are the "
         "annual (instantaneous) peaks; orange days are provisional. Hover for a day's flow. Drag across the strip under the "
-        "chart to zoom to a period, drag the shaded box to move along the record, double-click "
-        "the strip to see it all; dashed lines mark water years once zoomed. Gaps are days "
+        "chart to zoom to a period, drag the shaded box to move along the record, drag its "
+        "ends to lengthen or shorten the period, double-click the strip to see it all; dashed lines mark water years once zoomed. Gaps are days "
         "with no published value."
     )
 
@@ -773,10 +789,10 @@ def render(site_no: str) -> None:
         st.altair_chart(peak_chart(peaks["peaks"], change_year=change_year(screen)))
         st.caption(
             "Bars are the annual peaks as USGS reports them, coloured by qualification code. "
-            "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Gaged "
+            "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Flow Frequency "
             "page."
         )
-        _stationarity_section(screen)
+        stationarity_section(screen)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
