@@ -1,0 +1,2 @@
+# Served as published: the SRI hashes in ../index.html break if line endings change.
+* -text
