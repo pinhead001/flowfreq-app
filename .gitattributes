@@ -1,0 +1,3 @@
+# Vendored files are served as published: their SRI hashes break if line endings change.
+map_component/vendor/** -text
+map_component/fonts/** -text
