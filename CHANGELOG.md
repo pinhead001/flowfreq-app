@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Gage page: period box in red in dark mode
 
 Vega-Lite's grey brush and the blue grips disappeared against a dark page and the blue strip; in dark mode both are now red (`#ff4b4b`), and switching theme redraws the chart.
+### Gage page: summary hydrograph, flow-duration curve, stationarity report
+
+- A summary hydrograph (daily flow percentiles by day of the water year,
+  `Hydrograph.get_summary_stats`) and a flow-duration curve
+  (`regime.flow_duration_curve`, 0.1-99.9 percent) under the daily chart. Both use a log
+  axis unless the drawn flows reach zero.
+- The library's one-page `stationarity_report` of the annual peaks, as Markdown and PNG
+  downloads under the stationarity flags. Its event-count trend uses peaks over a
+  threshold from the daily record: two events a year, or one where two would pull the
+  threshold below the 75th percentile of daily flow (a snowmelt river).
 
 ### Resizable period on the gage page; Flow Frequency page
 
