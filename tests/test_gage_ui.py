@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -668,3 +669,113 @@ def test_axis_reads_months_over_a_year_and_water_years_over_a_decade():
 
 def test_stationarity_section_is_shared_with_the_gaged_page():
     assert callable(gage_ui.stationarity_section)
+
+
+# --- Summary hydrograph, flow-duration curve, stationarity report --------------------
+
+_DAYS = pd.date_range("2000-10-01", "2012-09-30", freq="D", name="date")
+LONG_DAILY = pd.DataFrame(
+    {
+        "flow_cfs": 100.0
+        + 900.0 * np.exp(-(((_DAYS.dayofyear - 150) / 25.0) ** 2))
+        + np.random.default_rng(3).gamma(2.0, 40.0, len(_DAYS))
+    },
+    index=_DAYS,
+)
+LONG_PEAKS = pd.DataFrame(
+    {
+        "water_year": np.arange(1981, 2013),
+        "peak_date": pd.to_datetime([f"{y}-05-20" for y in range(1981, 2013)]),
+        "peak_flow_cfs": np.random.default_rng(4).lognormal(8.0, 0.4, 32),
+        "qualification_code": [""] * 32,
+    }
+)
+
+
+def _scale_types(spec):
+    return {
+        layer["encoding"]["y"].get("scale", {}).get("type")
+        for layer in spec.get("layer", [spec])
+        if "y" in layer.get("encoding", {})
+    }
+
+
+def test_summary_hydrograph_draws_bands_median_and_mean_on_a_log_axis():
+    spec = gage_ui.summary_hydrograph_chart(LONG_DAILY).to_dict()
+    fields = {
+        layer["encoding"]["y"]["field"]
+        for layer in spec["layer"]
+        if "y" in layer.get("encoding", {})
+    }
+    assert {"p10", "p25", "p50", "mean"} <= fields
+    assert _scale_types(spec) == {"log"}
+    (rows,) = spec["datasets"].values()
+    assert len(rows) == 365 and rows[0]["date"].startswith("2019-10-01")
+
+
+def test_summary_hydrograph_goes_linear_with_zero_flows():
+    spec = gage_ui.summary_hydrograph_chart(DAILY).to_dict()  # DAILY has a zero day
+    assert _scale_types(spec) == {None}
+
+
+def test_duration_curve_spans_the_tails_on_a_log_axis():
+    spec = gage_ui.duration_curve_chart(LONG_DAILY).to_dict()
+    (rows,) = spec["datasets"].values()
+    pct = [r["exceedance_pct"] for r in rows]
+    assert pct[0] == 0.1 and pct[-1] == 99.9 and pct == sorted(pct)
+    flows = [r["flow_cfs"] for r in rows]
+    assert flows == sorted(flows, reverse=True)
+    assert spec["encoding"]["y"]["scale"]["type"] == "log"
+    # An ephemeral stream, dry a third of the time, goes linear: log cannot place zero.
+    dry = LONG_DAILY.assign(flow_cfs=LONG_DAILY["flow_cfs"].where(LONG_DAILY.index.month < 9, 0.0))
+    dry.iloc[::3, 0] = 0.0
+    assert gage_ui.duration_curve_chart(dry).to_dict()["encoding"]["y"]["scale"] == {"zero": True}
+
+
+def test_event_counts_fall_back_to_one_a_year_for_a_snowmelt_river(monkeypatch):
+    asked = []
+    real = gage_ui.pot_counts
+
+    def spy(flows, **kw):
+        asked.append(kw["events_per_year"])
+        return real(flows, **kw)
+
+    monkeypatch.setattr(gage_ui, "pot_counts", spy)
+    # One smooth freshet a year: two events a year only below the median flow.
+    hump = 50.0 + 900.0 * np.exp(-(((_DAYS.dayofyear - 150) / 25.0) ** 2))
+    snowmelt = pd.DataFrame({"flow_cfs": hump * (1 + 0.02 * np.sin(_DAYS.year))}, index=_DAYS)
+    counts = gage_ui.event_counts(snowmelt)
+    assert asked == [2.0, 1.0]
+    assert counts.counts.mean() == pytest.approx(1.0, abs=0.35)
+
+
+def test_event_counts_need_five_complete_years():
+    assert gage_ui.event_counts(DAILY) is None
+    assert gage_ui.event_counts(None) is None
+
+
+def test_report_files_are_markdown_and_png():
+    gage_ui.report_files.clear()
+    files = gage_ui.report_files(SITE, "Clark Fork", LONG_PEAKS, LONG_DAILY)
+    assert files["markdown"].startswith(f"# USGS {SITE} Clark Fork: annual peaks")
+    assert files["png"][:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_report_files_say_why_with_too_few_peaks():
+    gage_ui.report_files.clear()
+    assert "error" in gage_ui.report_files(SITE, "", PEAKS, None)
+
+
+def test_page_offers_the_regime_charts_and_the_report(monkeypatch):
+    gage_ui.report_files.clear()
+    at = _run(monkeypatch, peaks=LONG_PEAKS, daily=LONG_DAILY)
+    assert not at.exception
+    labels = [e.proto.label for e in at.get("download_button")]
+    assert "Stationarity report (Markdown)" in labels and "Stationarity figure (PNG)" in labels
+    assert any("Flow-duration curve" in c.value for c in at.caption)
+
+
+def test_page_without_enough_peaks_offers_no_report(monkeypatch):
+    gage_ui.report_files.clear()
+    labels = [e.proto.label for e in _run(monkeypatch).get("download_button")]
+    assert not any(label.startswith("Stationarity") for label in labels)
