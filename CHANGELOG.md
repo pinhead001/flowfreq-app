@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Map library and label glyphs served by the app
 
 - MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
+### Gage page: summary hydrograph, flow-duration curve, stationarity report
+
+- A summary hydrograph (daily flow percentiles by day of the water year,
+  `Hydrograph.get_summary_stats`) and a flow-duration curve
+  (`regime.flow_duration_curve`, 0.1-99.9 percent) under the daily chart. Both use a log
+  axis unless the drawn flows reach zero.
+- The library's one-page `stationarity_report` of the annual peaks, as Markdown and PNG
+  downloads under the stationarity flags. Its event-count trend uses peaks over a
+  threshold from the daily record: two events a year, or one where two would pull the
+  threshold below the 75th percentile of daily flow (a snowmelt river).
 
 ### Resizable period on the gage page; Flow Frequency page
 
