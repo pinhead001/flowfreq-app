@@ -246,7 +246,10 @@ def run_site_ffa(
             kind="skew",
         )
     except requests.RequestException as e:
-        return _ffa_error(f"Regional skew lookup failed for USGS {site_no}: {e}", kind="skew")
+        return _ffa_error(
+            f"Regional skew lookup failed for USGS {site_no}: {ungaged_ui.network_message(e)}",
+            kind="skew",
+        )
 
     # flowfreq >= 0.10.1 reads None, NaN, pd.NA and "" alike as "no code".
     peak_codes = peak_df["qualification_code"] if "qualification_code" in peak_df else None
@@ -275,6 +278,13 @@ def run_site_ffa(
         result["parameters"]["skew_note"] = skew_info["note"]
         result["parameters"]["skew_citation"] = skew_info["citation"]
     return result
+
+
+def describe_error(exc: Exception) -> str:
+    """An exception for the page: web failures as one line naming the service."""
+    if isinstance(exc, requests.RequestException):
+        return ungaged_ui.network_message(exc)
+    return str(exc)
 
 
 def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
@@ -837,7 +847,9 @@ if download_data and gage_list:
                         peak_df = gage.download_peak_flow()
                         st.session_state.peak_data[site_no] = peak_df
                     except Exception as e:
-                        st.warning(f"Could not download peak flows for {site_no}: {e}")
+                        st.warning(
+                            f"Could not download peak flows for {site_no}: {describe_error(e)}"
+                        )
                         st.session_state.peak_data[site_no] = None
 
                 if st.session_state.peak_data.get(site_no) is not None:
@@ -858,7 +870,7 @@ if download_data and gage_list:
                         )
 
         except Exception as e:
-            st.error(f"Error processing {site_no}: {str(e)}")
+            st.error(f"Error processing {site_no}: {describe_error(e)}")
 
         progress_bar.progress((idx + 1) / len(gage_list))
 

@@ -24,6 +24,7 @@ import logging
 import pathlib
 
 import pytest
+import requests
 
 pytest.importorskip(
     "streamlit",
@@ -578,3 +579,12 @@ def test_flow_frequency_results_show_the_stationarity_screen(app_module):
     source = " ".join(_source(app_module).split())
     block = source.split('with st.expander("Flood Frequency Results"')[0]
     assert 'gage_ui.stationarity_section(ffa_result["stationarity"])' in block
+
+
+def test_describe_error_shortens_web_failures_only(app_module):
+    response = requests.Response()
+    response.status_code, response.reason = 503, "Service Unavailable"
+    response.url = "https://api.waterdata.usgs.gov/ogcapi/v0/collections/peaks/items?x=1&y=2"
+    err = requests.HTTPError("503 Server Error: for url: " + response.url, response=response)
+    assert app_module.describe_error(err) == "503 Service Unavailable from api.waterdata.usgs.gov"
+    assert app_module.describe_error(ValueError("no peaks")) == "no peaks"
