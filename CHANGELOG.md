@@ -57,6 +57,14 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.21.0
+
+The pin moves from v0.20.0 to v0.21.0. Existing calls are unchanged. What it adds for the app:
+
+- The ungaged page gets the verified Alaska, California and Hawaii equations with their published covariance. `allow_nss_snapshot=True` used to return the NSS snapshot for those states.
+- Iowa estimates resolve without a region choice: the full equation sets where the basin has their characteristics, otherwise drainage-area-only.
+- Oregon interior basins resolve to Region 2A or 2B, and Montana estimates no longer stop on StreamStats' channel widths of 0.
+
 ### flowfreq v0.20.0
 
 The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it adds for the app:
