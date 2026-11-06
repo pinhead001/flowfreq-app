@@ -67,12 +67,20 @@ def _estimate(status: str = "verified", advisory: str = "") -> SiteEstimate:
     "code, badge",
     [
         ("WA", "verified"),
-        ("TN", "nss snapshot (not report-verified)"),
+        ("TN", "verified"),
+        ("DE", ungaged_ui.BADGE_PARTIAL),
         ("DC", "none: NSS serves no peak-flow regions"),
     ],
 )
 def test_coverage_badge(code, badge):
     assert ungaged_ui.coverage_badge(code) == badge
+
+
+def test_coverage_badge_snapshot(monkeypatch):
+    """No jurisdiction has only a snapshot as of flowfreq v0.22.0, but the branch stays."""
+    monkeypatch.setattr(ungaged_ui, "available_states", lambda: {})
+    monkeypatch.setattr(ungaged_ui, "nss_snapshot_states", lambda: {"TN"})
+    assert ungaged_ui.coverage_badge("TN") == "nss snapshot (not report-verified)"
 
 
 def test_run_estimate_success(monkeypatch):
