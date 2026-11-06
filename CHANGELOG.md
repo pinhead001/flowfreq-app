@@ -57,6 +57,23 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.22.0
+
+The pin moves from v0.20.0 to v0.22.0, through v0.21.0. Existing calls still work, but an estimate or a
+refusal can change. What it adds for the app:
+
+- **Verified equations:** 50 of 56 jurisdictions are now verified, Delaware is partial and 5 have none,
+  so the coverage map no longer shows a snapshot-only jurisdiction. `allow_nss_snapshot=True` returns the
+  verified set rather than the snapshot, and its coefficients, limits and errors differ from NSS where the
+  report does. The library's `docs/VERIFICATION_PLAN.md` says what verified rests on.
+- **Fewer region choices:** more overlapping sets resolve without one, including Iowa, Connecticut, Maine,
+  Vermont, Tennessee and Illinois, and sets whose stated limits exclude the basin. Those not used are listed
+  in the full report. Urban and NRCS-regulated basins, and some others, still ask.
+- **Karst:** StreamStats' karst warning no longer stops an estimate. It appears under Caveats in the full
+  report.
+- **Oregon and Montana:** Oregon interior basins resolve to Region 2A or 2B, and Montana estimates no longer
+  stop on StreamStats' channel widths of 0.
+
 ### flowfreq v0.20.0
 
 The pin moves from v0.19.0 to v0.20.0. Existing calls are unchanged. What it adds for the app:
