@@ -374,6 +374,30 @@ def test_chosen_set_caption():
     assert any(text == c.value for c in at.caption)
 
 
+def test_chosen_set_caption_names_the_librarys_choice():
+    from types import SimpleNamespace
+
+    est = _estimate()
+    est.regions = [SimpleNamespace(code="GC1487", name="Peak_Region_1_Unregulated_2019_5143")]
+    est.provenance = {
+        "region_choice_source": "region limit: GC1488 needs DAUNREG < CONTDA",
+        "alternative_regions": [{"code": "GC1488", "year": 2020}],
+    }
+    text = ungaged_ui.chosen_set_caption(est)
+    assert text.startswith("Equation set chosen: GC1487 (Peak_Region_1_Unregulated_2019_5143")
+    assert "Chosen by the library: region limit: GC1488 needs DAUNREG < CONTDA." in text
+    assert text.endswith("Not used: GC1488 (2020).")
+
+
+def test_user_choice_gives_no_library_reason():
+    from types import SimpleNamespace
+
+    est = _estimate()
+    est.regions = [SimpleNamespace(code="GC1488", name="Regulated")]
+    est.provenance = {"options": {"region": "GC1488"}, "region_choice_source": "ignored"}
+    assert "Chosen by the library" not in ungaged_ui.chosen_set_caption(est)
+
+
 def test_no_caption_without_a_choice():
     assert ungaged_ui.chosen_set_caption(_estimate()) == ""
 
