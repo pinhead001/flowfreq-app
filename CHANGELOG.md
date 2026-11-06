@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Page switching keeps your place
+
+- The sidebar **Page** choice and the Flow Frequency page's gage number survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page, and "Back to the map" from a gage page returns to the Ungaged page even when it was chosen on the radio. Choosing a page puts it in the URL (`?page=ungaged`, `?page=flowfrequency`) instead of clearing the URL.
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
