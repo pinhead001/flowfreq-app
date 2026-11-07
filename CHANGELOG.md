@@ -88,6 +88,17 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.24.0
+
+The pin moves from v0.23.0 to v0.24.0. Existing calls still work, but an estimate or a refusal can change. What it adds
+for the app:
+
+- **Indiana** selects its region at the point, as its report does. Sites that stopped on an overlap or on a neighboring
+  region's range now return an estimate, and a basin on a region boundary can move.
+- **Known-miss cautions:** estimates near Sweetwater Creek, OK, Little Cedar River, MN and White Bayou, LA carry a
+  warning, through the advisory the page already shows.
+- **The report** names the inputs outside the calibrated range in its extrapolation caveat.
+
 ### flowfreq v0.23.0
 
 The pin moves from v0.22.0 to v0.23.0. Existing calls still work, but an estimate or a refusal can change. What it

@@ -18,17 +18,8 @@ session-by-session detail is ever needed.
 
 ## Next steps (2026-11-01)
 
-#25 (daily chart labels by span) is merged. Open PRs, each green in CI and independent of the
-others; merge in any order. Each adds a
-section at the top of CHANGELOG.md's Unreleased, so every merge after the first needs that
-one-hunk conflict resolved.
-
-- #27 page radio and gage number survive a page round trip; the page goes in the URL.
-- #28 network errors name the service ("502 Bad Gateway from streamstats.usgs.gov").
-- #29 MapLibre and the label glyphs served from `map_component/` (adds a root `.gitattributes`).
-- #30 vega, vega-lite and vega-embed served from `vega_component/`. Once #29 and #30 are both
-  in, delete #29's TODO line "Self-host the Vega bundles".
-- #26 (another session): summary hydrograph, flow-duration curve, stationarity report.
+#25-#37 are merged, so no PR is open. None of #28-#32 or #37 has been opened in a browser: check the self-hosted map
+and chart, the dark-mode period box and the extrapolation caution first.
 
 Then, roughly in order of value:
 
@@ -74,8 +65,6 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
 
 - **Browser Back after an in-app page switch** leaves the URL and the page out of step until a
   refresh (Streamlit does not rerun on popstate). Fix properly with `st.navigation`/`st.Page`.
-- **Self-host the Vega bundles** in `vega_component/` as `map_component/` now does for MapLibre
-  (vega, vega-lite, vega-embed still load from jsDelivr, pinned with SRI hashes).
 - **Gage page requests**: four USGS requests per view (`download_peak_flow` repeats the
   monitoring-location lookup). Library candidate: `USGSgage.peak_summary()`, which would also
   move `summarize_peaks`/`record_years` out of the app (CLAUDE.md: numbers belong in flowfreq).
