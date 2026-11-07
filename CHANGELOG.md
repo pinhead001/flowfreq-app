@@ -65,6 +65,18 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.23.0
+
+The pin moves from v0.22.0 to v0.23.0. Existing calls still work, but an estimate or a refusal can change. What it
+adds for the app:
+
+- **Delaware is verified,** making 51 of 56, with 5 that have none. The coverage map no longer shows a partial
+  jurisdiction, and Delaware's estimates now use its verified set, with wider Coastal Plain intervals.
+- **Arkansas's Mississippi Alluvial Plain set** reads the corrected slope, so its estimates can rise.
+- **Fewer region choices:** AL at 5 mi2 or less uses Small streams, AR uses that alluvial plain set over region D
+  where it covers the basin, and GA, NC and SC at 1 mi2 or less use the 2023 set up to 10 percent impervious and the
+  2014 sets above it.
+
 ### flowfreq v0.22.0
 
 The pin moves from v0.20.0 to v0.22.0, through v0.21.0. Existing calls still work, but an estimate or a
