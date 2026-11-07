@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Where sets overlap and the library picks one by a stated limit or preference, the page now names it,
 says why, and lists the sets not used. Before, this appeared only in the full report.
 
+### Shorter network errors
+
+- A failed web request reads as one line naming the service -- "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov", "could not connect to api.waterdata.usgs.gov" -- instead of quoting the whole URL with its query string. The full text goes to the log. Applies to the Ungaged page's Delineate and Estimate, and to the Flow Frequency page's regional-skew lookup, peak download and processing errors.
+
 ### Page switching keeps your place
 
 - The sidebar **Page** choice and the Flow Frequency page's gage number survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page, and "Back to the map" from a gage page returns to the Ungaged page even when it was chosen on the radio. Choosing a page puts it in the URL (`?page=ungaged`, `?page=flowfrequency`) instead of clearing the URL.
