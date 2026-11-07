@@ -1,8 +1,9 @@
 """The basin map: a build-less MapLibre GL component for the ungaged page.
 
-``index.html`` in this directory is the whole frontend: MapLibre from a CDN and the
-Streamlit component protocol written by hand, so there is no npm build. This module
-declares it and prepares its arguments.
+``index.html`` in this directory is the whole frontend: MapLibre and the Streamlit
+component protocol written by hand, so there is no npm build. MapLibre 5.6.0
+(``vendor/``, BSD-3) and the label glyphs (``fonts/``, Noto Sans, OFL) are served from
+this directory rather than a CDN. This module declares it and prepares its arguments.
 
 The component's value is the latest event that needs Python, or ``None``::
 

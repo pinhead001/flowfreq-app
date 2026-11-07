@@ -53,10 +53,23 @@ def test_component_files_exist():
     assert (ROOT / "states.geojson").is_file()
 
 
-def test_html_pins_one_maplibre_version_and_only_https():
-    versions = set(re.findall(r"maplibre-gl@([\d.]+)", HTML))
-    assert len(versions) == 1
+def test_html_loads_the_bundled_maplibre_and_only_https():
+    # Served next to index.html: no CDN to be down or to change under a pinned URL.
+    for name in ("maplibre-gl.js", "maplibre-gl.css"):
+        assert f'"vendor/{name}"' in HTML
+    assert "unpkg.com" not in HTML and "demotiles.maplibre.org" not in HTML
+    assert "MapLibre contributors" in (ROOT / "vendor" / "LICENSE.txt").read_text()
     assert "http://" not in HTML
+
+
+@pytest.mark.parametrize("name", ["maplibre-gl.js", "maplibre-gl.css"])
+def test_bundled_maplibre_matches_its_integrity_hash(name):
+    import base64
+    import hashlib
+
+    pinned = re.search(rf'"vendor/{re.escape(name)}" integrity="(sha384-[^"]+)"', HTML)
+    digest = hashlib.sha384((ROOT / "vendor" / name).read_bytes()).digest()
+    assert pinned and pinned.group(1) == "sha384-" + base64.b64encode(digest).decode()
 
 
 def test_html_lists_streamgrid_services():
@@ -186,7 +199,22 @@ def test_html_labels_water_from_bundled_files():
     for name in ("water_base.geojson", "water_detail.geojson", "water_labels.geojson"):
         assert name in HTML
         assert (ROOT / name).is_file()
-    assert re.search(r'glyphs: "https://[^"]+\{fontstack\}/\{range\}\.pbf"', HTML)
+    # Glyphs are bundled too, resolved against the page's own address.
+    assert re.search(r'glyphs: [^,]*"fonts/\{fontstack\}/\{range\}\.pbf"', HTML)
+
+
+def test_bundled_glyphs_cover_every_bundled_name():
+    font = re.search(r'const WATER_FONT = \["([^"]+)"\]', HTML).group(1)
+    ranges = set()
+    for name in ("water_base", "water_detail", "water_labels", "states"):
+        data = json.loads((ROOT / f"{name}.geojson").read_text(encoding="utf-8"))
+        for feature in data["features"]:
+            for value in (feature.get("properties") or {}).values():
+                if isinstance(value, str):
+                    ranges.update(ord(c) // 256 for c in value)
+    for r in ranges:
+        assert (ROOT / "fonts" / font / f"{r * 256}-{r * 256 + 255}.pbf").is_file()
+    assert "Open Font License" in (ROOT / "fonts" / "OFL.txt").read_text(encoding="utf-8")
 
 
 def test_bundled_water_labels_use_real_names():
@@ -239,7 +267,7 @@ def test_html_brings_a_typed_point_into_view():
 
 
 def test_html_guards_the_maplibre_load():
-    assert re.search(r'maplibre-gl\.js" integrity="sha384-[A-Za-z0-9+/=]+"', HTML)
+    assert re.search(r'vendor/maplibre-gl\.js" integrity="sha384-[A-Za-z0-9+/=]+"', HTML)
     assert "typeof maplibregl" in HTML
 
 
