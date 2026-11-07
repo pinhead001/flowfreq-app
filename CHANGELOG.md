@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Map library and label glyphs served by the app
+### Ungaged page: names the set the library chose
 
-- MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
+Where sets overlap and the library picks one by a stated limit or preference, the page now names it,
+says why, and lists the sets not used. Before, this appeared only in the full report.
+
+### Page switching keeps your place
+
+- The sidebar **Page** choice and the Flow Frequency page's gage number survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page, and "Back to the map" from a gage page returns to the Ungaged page even when it was chosen on the radio. Choosing a page puts it in the URL (`?page=ungaged`, `?page=flowfrequency`) instead of clearing the URL.
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
@@ -20,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downloads under the stationarity flags. Its event-count trend uses peaks over a
   threshold from the daily record: two events a year, or one where two would pull the
   threshold below the 75th percentile of daily flow (a snowmelt river).
+
+### Map library and label glyphs served by the app
+
+- MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
 
 ### Resizable period on the gage page; Flow Frequency page
 
@@ -59,6 +68,35 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
+
+### flowfreq v0.23.0
+
+The pin moves from v0.22.0 to v0.23.0. Existing calls still work, but an estimate or a refusal can change. What it
+adds for the app:
+
+- **Delaware is verified,** making 51 of 56, with 5 that have none. The coverage map no longer shows a partial
+  jurisdiction, and Delaware's estimates now use its verified set, with wider Coastal Plain intervals.
+- **Arkansas's Mississippi Alluvial Plain set** reads the corrected slope, so its estimates can rise.
+- **Fewer region choices:** AL at 5 mi2 or less uses Small streams, AR uses that alluvial plain set over region D
+  where it covers the basin, and GA, NC and SC at 1 mi2 or less use the 2023 set up to 10 percent impervious and the
+  2014 sets above it.
+
+### flowfreq v0.22.0
+
+The pin moves from v0.20.0 to v0.22.0, through v0.21.0. Existing calls still work, but an estimate or a
+refusal can change. What it adds for the app:
+
+- **Verified equations:** 50 of 56 jurisdictions are now verified, Delaware is partial and 5 have none,
+  so the coverage map no longer shows a snapshot-only jurisdiction. `allow_nss_snapshot=True` returns the
+  verified set rather than the snapshot, and its coefficients, limits and errors differ from NSS where the
+  report does. The library's `docs/VERIFICATION_PLAN.md` says what verified rests on.
+- **Fewer region choices:** more overlapping sets resolve without one, including Iowa, Connecticut, Maine,
+  Vermont, Tennessee and Illinois, and sets whose stated limits exclude the basin. Those not used are listed
+  in the full report. Urban and NRCS-regulated basins, and some others, still ask.
+- **Karst:** StreamStats' karst warning no longer stops an estimate. It appears under Caveats in the full
+  report.
+- **Oregon and Montana:** Oregon interior basins resolve to Region 2A or 2B, and Montana estimates no longer
+  stop on StreamStats' channel widths of 0.
 
 ### flowfreq v0.20.0
 
