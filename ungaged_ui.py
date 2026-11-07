@@ -54,6 +54,14 @@ _SITE_RE = re.compile(r"\d{8,15}")
 #: that does not draw it, so a trip to another page would empty the inputs.
 _KEPT = ("ungaged_lat", "ungaged_lon", "ungaged_state")
 
+#: Shown beside the checkbox once it is ticked, before anything runs.
+EXTRAPOLATION_CAUTION = (
+    "Extrapolation can give an estimate for a basin outside the range the equations were fit on. "
+    "A report may say its method doesn't apply there at all, and the published error and "
+    "prediction interval don't hold. Treat any extrapolated flow as indicative only. It will be "
+    "marked in the results and the report."
+)
+
 BADGE_VERIFIED = "verified"
 BADGE_PARTIAL = "partial"
 BADGE_SNAPSHOT = "nss snapshot (not report-verified)"
@@ -288,7 +296,11 @@ def run_estimate(
         return {"error": str(exc), "kind": "equations"}
     except OutOfRangeError as exc:
         return {
-            "error": f"{exc} (tick 'Allow extrapolation' to proceed)",
+            "error": (
+                f"{exc}. This basin is outside the range the equations were fit on, so no estimate "
+                "was made. Ticking 'Allow extrapolation' gives one anyway, but the published error "
+                "doesn't hold there and the method may not apply."
+            ),
             "kind": "out_of_range",
         }
     except KeyError as exc:  # unknown jurisdiction: KeyError quotes str(); use the message
@@ -491,6 +503,29 @@ def _quantile_frame(estimate: SiteEstimate) -> pd.DataFrame:
     )
 
 
+def extrapolation_warning(estimate: SiteEstimate) -> str:
+    """Which quantiles are extrapolated and which inputs caused it, or ``""`` if none are.
+
+    Built from the ``extrapolated`` column and ``provenance["out_of_range"]``.
+    """
+    q = estimate.quantiles
+    flagged = q["aep"][q["extrapolated"].astype(bool)] if len(q) else []
+    if not len(flagged):
+        return ""
+    inputs: List[str] = []
+    for per_region in (estimate.provenance.get("out_of_range") or {}).values():
+        for items in per_region.values():
+            inputs.extend(i for i in items if i not in inputs)
+    aeps = ", ".join(f"{a * 100:g}%" for a in flagged)
+    text = f"Extrapolated at {len(flagged)} of {len(q)} AEPs ({aeps})."
+    if inputs:
+        text += f" Outside the calibrated range: {'; '.join(inputs)}."
+    return (
+        text + " The published error and prediction interval don't hold here, and the method may "
+        "not apply. Treat these flows as indicative only."
+    )
+
+
 def chosen_set_caption(estimate: SiteEstimate) -> str:
     """One line naming the equation set chosen from an overlap, or ``""`` if none was.
 
@@ -536,6 +571,9 @@ def _show_estimate(estimate: SiteEstimate) -> None:
             estimate.advisory
             or "These equations were harvested from NSS and are not report-verified."
         )
+    extrapolated = extrapolation_warning(estimate)
+    if extrapolated:
+        st.warning(extrapolated)
     st.subheader(f"Estimate at {estimate.lat:.4f}, {estimate.lon:.4f} ({estimate.state})")
     st.caption(f"Method: {estimate.method}. Equation library: {estimate.library_status}.")
     chosen = chosen_set_caption(estimate)
@@ -645,6 +683,12 @@ def _show_comparison(outcomes: Dict[str, Dict[str, Any]]) -> None:
     estimates = {code: o["estimate"] for code, o in outcomes.items() if "estimate" in o}
     if len(estimates) > 1:
         st.dataframe(comparison_frame(estimates), hide_index=True)
+        flagged = [c for c, e in estimates.items() if extrapolation_warning(e)]
+        if flagged:
+            st.warning(
+                f"Extrapolated: {', '.join(flagged)}. Those flows are indicative only; each "
+                "state's report below or its own estimate says which inputs are out of range."
+            )
         st.caption(
             "Each column applies one state's published equations to the same basin. They "
             "are separate reports with their own regions and characteristics, not parts of "
@@ -717,7 +761,10 @@ def _status_line(result: Optional[Dict[str, Any]]) -> None:
         return
     if "estimate" in outcome:
         rows = len(outcome["estimate"].quantiles)
-        st.success(f"Estimate ready: {rows} flood quantile(s), below the inputs.")
+        if extrapolation_warning(outcome["estimate"]):
+            st.warning(f"Extrapolated estimate: {rows} flood quantile(s), below the inputs.")
+        else:
+            st.success(f"Estimate ready: {rows} flood quantile(s), below the inputs.")
     elif "basin" in outcome:
         area = outcome.get("area_sq_mi")
         size = f"{area:,.1f} sq mi" if area is not None else "area unknown"
@@ -800,6 +847,8 @@ def render() -> None:
         help="Needed for jurisdictions whose library is harvested from NSS.",
     )
     extrapolate = st.checkbox("Allow extrapolation outside the calibrated range", value=False)
+    if extrapolate:
+        st.warning(EXTRAPOLATION_CAUTION)
     for key in _KEPT:
         st.session_state[f"_{key}"] = st.session_state.get(key)
 
