@@ -66,6 +66,10 @@ basin). An *Estimate* after a *Delineate* at the same point now delineates again
 needs the characteristics. The "state StreamStats does not delineate" warning names the
 state plainly.
 
+### Gage page: period box in red in dark mode
+
+Vega-Lite's grey brush and the blue grips disappeared against a dark page and the blue strip; in dark mode both are now red (`#ff4b4b`), and switching theme redraws the chart.
+
 ### Plain messages for StreamStats refusals (flowfreq v0.20.0)
 
 Estimate and Delineate show a warning that says what to do, instead of the library's error,
