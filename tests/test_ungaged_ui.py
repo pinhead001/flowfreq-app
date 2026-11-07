@@ -404,6 +404,68 @@ def test_user_choice_gives_no_library_reason():
     assert "Chosen by the library" not in ungaged_ui.chosen_set_caption(est)
 
 
+def _extrapolated(flags, out_of_range=None):
+    est = _estimate()
+    n = len(flags)
+    est.quantiles = pd.DataFrame(
+        {
+            "aep": [0.01, 0.5][:n],
+            "flow_cfs": [5249.0, 1243.0][:n],
+            "lower": [2742.0, 693.0][:n],
+            "upper": [10046.0, 2230.0][:n],
+            "interval_level": [0.9, 0.9][:n],
+            "interval_method": ["prediction interval"] * n,
+            "extrapolated": flags,
+            "regions": ["GC1934"] * n,
+        },
+        columns=list(QUANTILE_COLUMNS),
+    )
+    est.provenance = {"out_of_range": out_of_range or {}}
+    return est
+
+
+def test_extrapolation_warning_names_the_aeps_and_inputs():
+    item = "LC19IMP=34.94 > max 10.0"
+    text = ungaged_ui.extrapolation_warning(
+        _extrapolated(
+            [True, True], {0.01: {"GC1934": [item]}, 0.5: {"GC1934": [item]}}  # listed once
+        )
+    )
+    assert text.startswith("Extrapolated at 2 of 2 AEPs (1%, 50%).")
+    assert text.count(item) == 1
+    assert "indicative only" in text
+
+
+def test_extrapolation_warning_is_empty_in_range():
+    assert ungaged_ui.extrapolation_warning(_extrapolated([False, False])) == ""
+
+
+def test_extrapolated_result_is_marked_on_the_page():
+    est = _extrapolated([True], {0.01: {"GC1934": ["LC19IMP=34.94 > max 10.0"]}})
+    at = _run({"outcome": {"estimate": est}})
+    assert any("LC19IMP=34.94" in w.value for w in at.warning)
+    assert any("Extrapolated estimate" in w.value for w in at.warning)
+    assert not any("Estimate ready" in s.value for s in at.success)
+
+
+def test_in_range_result_has_no_extrapolation_warning():
+    at = _run({"outcome": {"estimate": _extrapolated([False])}})
+    assert not any("Extrapolated" in w.value for w in at.warning)
+    assert any("Estimate ready" in s.value for s in at.success)
+
+
+def test_out_of_range_refusal_cautions_before_offering_extrapolation(monkeypatch):
+    def boom(*a, **k):
+        raise OutOfRangeError("HR1-5 AEP 0.01: LC19IMP=34.94 > max 10.0")
+
+    monkeypatch.setattr(ungaged_ui, "estimate_at_site", boom)
+    out = ungaged_ui.run_estimate(33.0, -84.0, "GA", [0.01], False)
+    assert out["kind"] == "out_of_range"
+    assert "no estimate was made" in out["error"]
+    assert "the method may not apply" in out["error"]
+    assert "to proceed" not in out["error"]
+
+
 def test_no_caption_without_a_choice():
     assert ungaged_ui.chosen_set_caption(_estimate()) == ""
 

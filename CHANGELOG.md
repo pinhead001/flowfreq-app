@@ -15,6 +15,13 @@ says why, and lists the sets not used. Before, this appeared only in the full re
 ### Page switching keeps your place
 
 - The sidebar **Page** choice and the Flow Frequency page's gage number survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page, and "Back to the map" from a gage page returns to the Ungaged page even when it was chosen on the radio. Choosing a page puts it in the URL (`?page=ungaged`, `?page=flowfrequency`) instead of clearing the URL.
+### Ungaged page: cautions about extrapolation and marks it
+
+Ticking 'Allow extrapolation' now shows a caution before anything runs, and a refusal says what ticking it means
+rather than only how to proceed. An extrapolated result carries a warning naming the AEPs and the inputs outside
+the calibrated range, the status line says so, and a comparison names the states affected. The table's column and
+the report's caveat already recorded it.
+
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
