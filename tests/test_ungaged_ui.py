@@ -68,12 +68,18 @@ def _estimate(status: str = "verified", advisory: str = "") -> SiteEstimate:
     [
         ("WA", "verified"),
         ("TN", "verified"),
-        ("DE", ungaged_ui.BADGE_PARTIAL),
+        ("DE", "verified"),
         ("DC", "none: NSS serves no peak-flow regions"),
     ],
 )
 def test_coverage_badge(code, badge):
     assert ungaged_ui.coverage_badge(code) == badge
+
+
+def test_coverage_badge_partial(monkeypatch):
+    """No jurisdiction is partial as of flowfreq v0.23.0, but the branch stays."""
+    monkeypatch.setattr(ungaged_ui, "available_states", lambda: {"DE": "partial"})
+    assert ungaged_ui.coverage_badge("DE") == ungaged_ui.BADGE_PARTIAL
 
 
 def test_coverage_badge_snapshot(monkeypatch):
