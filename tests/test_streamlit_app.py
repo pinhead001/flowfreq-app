@@ -578,3 +578,75 @@ def test_flow_frequency_results_show_the_stationarity_screen(app_module):
     source = " ".join(_source(app_module).split())
     block = source.split('with st.expander("Flood Frequency Results"')[0]
     assert 'gage_ui.stationarity_section(ffa_result["stationarity"])' in block
+
+
+def _page_radio(at):
+    return next(r for r in at.sidebar.radio if r.label == "Page")
+
+
+def _gage_box(at):
+    return next(t for t in at.sidebar.text_input if t.label == "USGS Gage Number")
+
+
+def test_a_linked_site_survives_a_trip_to_the_ungaged_page():
+    at = _app_with({"page": "gaged", "site": "12340500"})
+    _page_radio(at).set_value("Ungaged site")
+    at.run()
+    _page_radio(at).set_value("Flow Frequency")
+    at.run()
+    assert not at.exception
+    assert _gage_box(at).value == "12340500"
+
+
+def test_a_typed_gage_number_survives_a_trip_to_the_ungaged_page():
+    at = _app_with({})
+    _gage_box(at).set_value("09380000")
+    at.run()
+    _page_radio(at).set_value("Ungaged site")
+    at.run()
+    _page_radio(at).set_value("Flow Frequency")
+    at.run()
+    assert not at.exception
+    assert _gage_box(at).value == "09380000"
+
+
+def test_choosing_a_page_puts_it_in_the_url():
+    at = _app_with({"page": "gaged", "site": "12340500", "run": "1"})
+    _page_radio(at).set_value("Ungaged site")
+    at.run()
+    assert not at.exception
+    # AppTest gives a list on some Streamlit versions and a string on others.
+    assert at.query_params["page"] in ("ungaged", ["ungaged"])
+    assert "site" not in at.query_params and "run" not in at.query_params
+
+
+def test_a_link_to_a_page_moves_the_radio_after_a_hand_choice():
+    # The gage page's "Back to the map" sets ?page=ungaged after the radio was used.
+    at = _app_with({})
+    _page_radio(at).set_value("Ungaged site")
+    at.run()
+    _page_radio(at).set_value("Flow Frequency")
+    at.run()
+    at.query_params["page"] = "ungaged"
+    at.run()
+    assert not at.exception
+    assert _page_radio(at).value == "Ungaged site"
+    assert any("Ungaged site" in h.value for h in at.header)
+
+
+def test_back_from_a_gage_page_returns_to_the_ungaged_page(monkeypatch):
+    import gage_ui
+
+    monkeypatch.setattr(gage_ui, "render", lambda site: None)
+    at = _app_with({})
+    _page_radio(at).set_value("Ungaged site")
+    at.run()
+    at.query_params.clear()
+    at.query_params["page"] = "gage"  # a gage popup on the map ...
+    at.query_params["site"] = "12340500"
+    at.run()
+    at.query_params.clear()
+    at.query_params["page"] = "ungaged"  # ... and "Back to the map"
+    at.run()
+    assert not at.exception
+    assert _page_radio(at).value == "Ungaged site"
