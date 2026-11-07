@@ -16,16 +16,16 @@ session-by-session detail is ever needed.
   verified at v0.15.0 on 2026-10-25 (earlier: 29 passed at v0.6.1 and v0.7.0).
 - No drift open right now. New drift goes here as it's found.
 
-## Next steps (2026-11-01)
+## Next steps (2026-11-07)
 
 #25-#37 are merged, so no PR is open. None of #28-#32 or #37 has been opened in a browser: check the self-hosted map
 and chart, the dark-mode period box and the extrapolation caution first.
 
 Then, roughly in order of value:
 
-1. **Estimate, live.** Delineate was checked live on 2026-11-01 (see
-   `docs/map_manual_checks.md`); Estimate still fails because StreamStats' ss-hydro returns
-   502. Re-run the Estimate and "Re-run with WY" checks when it is back.
+1. **Estimate, in a browser.** Delineate was checked live on 2026-11-01 (see
+   `docs/map_manual_checks.md`), and `run_estimate` returned live estimates on 2026-11-07. Run the
+   Estimate and "Re-run with WY" checks on the page itself.
 2. **#24's resize grips in a browser.** The vega component draws (checked 2026-11-01), but
    dragging a grip to resize the period box has not been watched in a real browser.
 3. **Browser Back** after an in-app page switch (below): `st.navigation`/`st.Page`. #27 made
