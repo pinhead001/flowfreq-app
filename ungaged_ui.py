@@ -494,17 +494,21 @@ def _quantile_frame(estimate: SiteEstimate) -> pd.DataFrame:
 def chosen_set_caption(estimate: SiteEstimate) -> str:
     """One line naming the equation set chosen from an overlap, or ``""`` if none was.
 
-    Built from ``provenance["options"]["region"]`` and
-    ``provenance["alternative_regions"]``.
+    The choice is the user's (``provenance["options"]["region"]``) or the library's, by a
+    stated limit or preference (``provenance["region_choice_source"]``). Sets not used come
+    from ``provenance["alternative_regions"]``.
     """
     region = (estimate.provenance.get("options") or {}).get("region")
+    reason = estimate.provenance.get("region_choice_source")
     alternatives = estimate.provenance.get("alternative_regions") or []
-    if not region:
+    if not region and not reason:
         return ""
     used = next((r for r in estimate.regions if r.code == region), None)
     if used is None and len(estimate.regions) == 1:
         used = estimate.regions[0]
-    code = used.code if used is not None else region
+    code = (
+        used.code if used is not None else (region or ", ".join(r.code for r in estimate.regions))
+    )
     detail = []
     if used is not None and getattr(used, "name", ""):
         detail.append(used.name)
@@ -516,6 +520,8 @@ def chosen_set_caption(estimate: SiteEstimate) -> str:
             break
         break
     text = f"Equation set chosen: {code}" + (f" ({', '.join(detail)})" if detail else "") + "."
+    if not region:
+        text += f" Chosen by the library: {reason}."
     if alternatives:
         text += " Not used: " + ", ".join(
             f"{a['code']} ({a['year']})" if a.get("year") else str(a["code"]) for a in alternatives

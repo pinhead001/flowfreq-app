@@ -67,12 +67,26 @@ def _estimate(status: str = "verified", advisory: str = "") -> SiteEstimate:
     "code, badge",
     [
         ("WA", "verified"),
-        ("TN", "nss snapshot (not report-verified)"),
+        ("TN", "verified"),
+        ("DE", "verified"),
         ("DC", "none: NSS serves no peak-flow regions"),
     ],
 )
 def test_coverage_badge(code, badge):
     assert ungaged_ui.coverage_badge(code) == badge
+
+
+def test_coverage_badge_partial(monkeypatch):
+    """No jurisdiction is partial as of flowfreq v0.23.0, but the branch stays."""
+    monkeypatch.setattr(ungaged_ui, "available_states", lambda: {"DE": "partial"})
+    assert ungaged_ui.coverage_badge("DE") == ungaged_ui.BADGE_PARTIAL
+
+
+def test_coverage_badge_snapshot(monkeypatch):
+    """No jurisdiction has only a snapshot as of flowfreq v0.22.0, but the branch stays."""
+    monkeypatch.setattr(ungaged_ui, "available_states", lambda: {})
+    monkeypatch.setattr(ungaged_ui, "nss_snapshot_states", lambda: {"TN"})
+    assert ungaged_ui.coverage_badge("TN") == "nss snapshot (not report-verified)"
 
 
 def test_run_estimate_success(monkeypatch):
@@ -364,6 +378,30 @@ def test_chosen_set_caption():
     assert text.endswith("Not used: GC344 (2003), GC2020 (2025).")
     at = _run({"outcome": {"estimate": est}})
     assert any(text == c.value for c in at.caption)
+
+
+def test_chosen_set_caption_names_the_librarys_choice():
+    from types import SimpleNamespace
+
+    est = _estimate()
+    est.regions = [SimpleNamespace(code="GC1487", name="Peak_Region_1_Unregulated_2019_5143")]
+    est.provenance = {
+        "region_choice_source": "region limit: GC1488 needs DAUNREG < CONTDA",
+        "alternative_regions": [{"code": "GC1488", "year": 2020}],
+    }
+    text = ungaged_ui.chosen_set_caption(est)
+    assert text.startswith("Equation set chosen: GC1487 (Peak_Region_1_Unregulated_2019_5143")
+    assert "Chosen by the library: region limit: GC1488 needs DAUNREG < CONTDA." in text
+    assert text.endswith("Not used: GC1488 (2020).")
+
+
+def test_user_choice_gives_no_library_reason():
+    from types import SimpleNamespace
+
+    est = _estimate()
+    est.regions = [SimpleNamespace(code="GC1488", name="Regulated")]
+    est.provenance = {"options": {"region": "GC1488"}, "region_choice_source": "ignored"}
+    assert "Chosen by the library" not in ungaged_ui.chosen_set_caption(est)
 
 
 def test_no_caption_without_a_choice():
