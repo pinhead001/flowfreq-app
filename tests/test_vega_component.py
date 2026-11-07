@@ -55,7 +55,21 @@ def test_scripts_are_pinned_with_sri():
     ]
     for src, attrs in scripts:
         assert re.search(r"@\d+\.\d+\.\d+/", src), src  # an exact version
+        assert src.startswith("vendor/"), src  # served next to index.html, not a CDN
         assert 'integrity="sha384-' in attrs and 'crossorigin="anonymous"' in attrs
+    assert "cdn.jsdelivr.net" not in HTML
+
+
+def test_bundled_scripts_match_their_integrity_hashes_and_carry_licences():
+    import base64
+    import hashlib
+
+    root = Path(vega_component.__file__).parent
+    for src, attrs in re.findall(r"<script src=\"([^\"]+)\"([^>]*)>", HTML):
+        pinned = re.search(r'integrity="(sha384-[^"]+)"', attrs).group(1)
+        digest = hashlib.sha384((root / src).read_bytes()).digest()
+        assert pinned == "sha384-" + base64.b64encode(digest).decode(), src
+        assert "University of Washington" in (root / src).with_name("LICENSE").read_text()
 
 
 def test_vega_lite_matches_the_altair_schema():

@@ -10,9 +10,9 @@
   #chart .vega-bindings { font-size: 14px; padding: 4px 0 0 4px; }
   #error { color: #b00020; font-size: 14px; white-space: pre-wrap; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/vega@6.4.0/build/vega.min.js" integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1/build/vega-lite.min.js" integrity="sha384-QtG7pnWvq1Tk0Rcvl53B1TEVw7U1PUqfciCz3XMUqSmi1fNpJwiv5ml+m5NeOOzH" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/vega-embed@7.3.0/build/vega-embed.min.js" integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL" crossorigin="anonymous"></script>
+<script src="vendor/vega@6.4.0/vega.min.js" integrity="sha384-VKdcJr3ZaBIJMbVcopTAI/JEuUkSY6qnwVu9iLuw0DnQ9gQ1JjsfZJhXFQAgNi43" crossorigin="anonymous"></script>
+<script src="vendor/vega-lite@6.4.1/vega-lite.min.js" integrity="sha384-QtG7pnWvq1Tk0Rcvl53B1TEVw7U1PUqfciCz3XMUqSmi1fNpJwiv5ml+m5NeOOzH" crossorigin="anonymous"></script>
+<script src="vendor/vega-embed@7.3.0/vega-embed.min.js" integrity="sha384-Muy1QRxYFeNrA1zShc1KtN4OfipkR/61gt+HWqN57c1Zxu3Oe16TsilsruVVjfKL" crossorigin="anonymous"></script>
 </head>
 <body>
 <div id="chart"></div>
@@ -135,7 +135,7 @@ async function onRender(args, theme) {
   if (view) { view.finalize(); view = null; }
   holder.innerHTML = "";
   if (typeof vegaEmbed === "undefined") {
-    error.textContent = "The chart library could not be loaded from cdn.jsdelivr.net.";
+    error.textContent = "The chart library could not be loaded (vendor/ files missing or altered).";
     fitFrame();
     return;
   }

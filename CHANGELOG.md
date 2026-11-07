@@ -52,6 +52,10 @@ says why, and lists the sets not used. Before, this appeared only in the full re
   as having no located source), and *Analyze anyway (regulated gage)* is now *Analyze
   regulated gage*.
 
+### Chart library served by the app
+
+- The gage page's daily chart loads vega 6.4.0, vega-lite 6.4.1 and vega-embed 7.3.0 from `vega_component/vendor/` (BSD-3 licences alongside) instead of cdn.jsdelivr.net; the files are the published ones, with the same SRI hashes, which a test recomputes.
+
 ### Delineate without ss-hydro
 
 The map's *Delineate* uses `flowfreq.streamstats.delineate_watershed`: the polygon from
