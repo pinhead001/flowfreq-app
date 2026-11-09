@@ -100,6 +100,7 @@ def prepare_args(
     coverage: Mapping[str, str],
     height: int,
     view: Optional[Tuple[float, float, float]] = None,
+    focus: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Turn the page's state into the JSON the component receives.
 
@@ -124,6 +125,9 @@ def prepare_args(
     view : (lat, lon, zoom), optional
         Where a newly mounted map opens (the last place the user clicked), instead of
         CONUS. Ignored once the map exists, so it never fights the user's panning.
+    focus : dict, optional
+        ``{"to": "point" | "basin", "n": int}`` from the page's view buttons. The map moves
+        when ``n`` changes, and ignores the value it opens with.
 
     Returns
     -------
@@ -146,6 +150,7 @@ def prepare_args(
         "coverage": dict(coverage),
         "height": int(height),
         "view": None if view is None else [float(v) for v in view],
+        "focus": None if focus is None else {"to": str(focus["to"]), "n": int(focus["n"])},
     }
 
 
@@ -159,6 +164,7 @@ def basin_map(
     coverage: Mapping[str, str],
     height: int = 520,
     view: Optional[Tuple[float, float, float]] = None,
+    focus: Optional[Mapping[str, Any]] = None,
     key: str = "basin_map",
 ) -> Optional[Dict[str, Any]]:
     """Draw the basin map and return its latest event.
@@ -180,5 +186,6 @@ def basin_map(
         coverage=coverage,
         height=height,
         view=view,
+        focus=focus,
     )
     return _component(**args, key=key, default=None)

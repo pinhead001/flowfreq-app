@@ -43,6 +43,7 @@ from flowfreq.ungaged import SiteEstimate
 
 from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
+from progress_ui import working
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,47 @@ def network_message(exc: requests.RequestException) -> str:
             return f"could not connect to {host}"
         return f"could not connect ({str(exc)[:120]})"
     return f"{type(exc).__name__} from {host}" if host else str(exc)[:160]
+
+
+#: StreamStats services by URL path, and the step each one is.
+_STREAMSTATS_STEPS = (
+    ("ss-hydro", "computing basin characteristics (StreamStats ss-hydro)"),
+    ("ss-delineate", "delineating the watershed (StreamStats ss-delineate)"),
+    ("nssservices", "looking up the regression regions (NSS)"),
+)
+
+
+def streamstats_failure(exc: requests.RequestException) -> str:
+    """Say which StreamStats step failed and that it is the service, not the inputs.
+
+    Parameters
+    ----------
+    exc : requests.RequestException
+        Includes flowfreq's ``StreamStatsTransportError``, raised after its retries.
+
+    Returns
+    -------
+    str
+        For example ``"StreamStats failed while computing basin characteristics
+        (StreamStats ss-hydro): no answer after 3 tries. ..."``; for a request that names
+        no StreamStats service, the plain :func:`network_message`.
+    """
+    response = getattr(exc, "response", None)
+    request = getattr(exc, "request", None)
+    text = " ".join(
+        str(x)
+        for x in (exc, getattr(response, "url", ""), getattr(request, "url", ""))
+        if x is not None
+    )
+    step = next((what for key, what in _STREAMSTATS_STEPS if key in text), None)
+    if step is None:
+        return f"StreamStats request failed: {network_message(exc)}"
+    found = re.search(r"failed after (\d+) attempts", str(exc))
+    detail = f"no answer after {found.group(1)} tries" if found else network_message(exc)
+    return (
+        f"StreamStats failed while {step}: {detail}. This is StreamStats' service, not your "
+        "inputs; try again in a few minutes."
+    )
 
 
 def coverage_badge(code: str) -> str:
@@ -308,7 +350,7 @@ def run_estimate(
     except (ValueError, LookupError) as exc:
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
-        return {"error": f"StreamStats request failed: {network_message(exc)}", "kind": "network"}
+        return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
@@ -346,7 +388,7 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
-        return {"error": f"StreamStats request failed: {network_message(exc)}", "kind": "network"}
+        return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("delineation failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
@@ -460,10 +502,16 @@ def handle_map_event(event: Any, codes: Sequence[str]) -> Optional[str]:
 def _basin_payload(
     result: Optional[Dict[str, Any]],
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Tuple[float, float]]]:
-    """The basin polygon and snapped pour point a stored result carries, if any."""
+    """The basin polygon and snapped pour point a stored result carries, if any.
+
+    A failed estimate at the point of an earlier basin keeps that basin (``kept_basin``),
+    so a StreamStats outage doesn't wipe the map.
+    """
     outcome = (result or {}).get("outcome") or {}
     if "basin" in outcome:
         return outcome["basin"], outcome.get("snap")
+    if "kept_basin" in outcome:
+        return outcome["kept_basin"], outcome.get("kept_snap")
     estimate = outcome.get("estimate")
     if estimate is None or estimate.basin_geojson is None:
         return None, None
@@ -666,7 +714,12 @@ def _store_comparison(inputs: Dict[str, Any], codes: Sequence[str]) -> None:
     for code in codes:
         if code == inputs["state"]:
             continue
-        with st.spinner(f"Estimating with {code}'s equations..."):
+        with working(
+            "estimate",
+            f"Estimating with {code}'s equations",
+            f"StreamStats computes the basin's characteristics in {code}'s grid (10-60 seconds), "
+            f"then flowfreq applies {code}'s equations.",
+        ):
             outcomes[code] = run_estimate(
                 inputs["lat"],
                 inputs["lon"],
@@ -730,8 +783,58 @@ def _offer_other_states(basin: Dict[str, Any], used: str) -> None:
         _show_comparison(compared)
 
 
+#: What the progress indicators say while StreamStats works.
+DELINEATE_TEXT = (
+    "Delineating the watershed",
+    "StreamStats is snapping the point to its stream grid and tracing the basin boundary "
+    "(ss-delineate). This usually takes 5-30 seconds.",
+)
+
+
+def estimate_text(state: Optional[str]) -> Tuple[str, str]:
+    """The indicator's title and detail for an estimate in ``state``."""
+    return (
+        "Delineating the watershed and estimating flood frequencies",
+        "StreamStats delineates the basin again to compute its characteristics (ss-hydro, "
+        "usually 10-60 seconds; it is the only service that computes them). Then flowfreq "
+        f"locates the regression regions and applies {state or 'the state'}'s equations, "
+        "which takes a second.",
+    )
+
+
+def keep_basin(
+    outcome: Dict[str, Any], previous: Optional[Dict[str, Any]], inputs: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Carry an earlier basin onto a failed outcome at the same point.
+
+    Parameters
+    ----------
+    outcome : dict
+        From :func:`run_estimate`.
+    previous : dict, optional
+        The stored result before this run.
+    inputs : dict
+        This run's inputs.
+
+    Returns
+    -------
+    dict
+        ``outcome``, with ``kept_basin`` and ``kept_snap`` when it failed and the earlier
+        result had a basin for the same coordinates and state.
+    """
+    if "estimate" in outcome or "basin" in outcome or not previous:
+        return outcome
+    before = previous.get("inputs") or {}
+    same = all(before.get(k) == inputs.get(k) for k in ("lat", "lon", "state"))
+    basin, snap = _basin_payload(previous)
+    if not same or basin is None:
+        return outcome
+    return {**outcome, "kept_basin": basin, "kept_snap": snap}
+
+
 def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
-    with st.spinner("Delineating the basin with StreamStats..."):
+    previous = st.session_state.get(RESULT_KEY)
+    with working("estimate", *estimate_text(inputs.get("state"))):
         outcome = run_estimate(
             inputs["lat"],
             inputs["lon"],
@@ -741,11 +844,12 @@ def _store(inputs: Dict[str, Any], region: Optional[str] = None) -> None:
             region=region,
             allow_extrapolation=inputs["extrapolate"],
         )
+    outcome = keep_basin(outcome, previous, inputs)
     st.session_state[RESULT_KEY] = {"inputs": inputs, "outcome": outcome, "region": region}
 
 
 def _store_basin(inputs: Dict[str, Any]) -> None:
-    with st.spinner("Delineating the basin with StreamStats..."):
+    with working("delineate", *DELINEATE_TEXT):
         outcome = run_delineation(inputs["lat"], inputs["lon"], inputs["state"])
     st.session_state[RESULT_KEY] = {"inputs": inputs, "outcome": outcome}
 
@@ -775,6 +879,17 @@ def _status_line(result: Optional[Dict[str, Any]]) -> None:
         st.warning(outcome["error"])
     else:
         st.error(outcome["error"])
+    if "kept_basin" in outcome:
+        st.info("The basin from the earlier delineation is still shown on the map.")
+
+
+#: Session key for a request to move the map, from the sidebar's view buttons.
+FOCUS_KEY = "map_focus"
+
+
+def _focus(to: str) -> None:
+    previous = st.session_state.get(FOCUS_KEY) or {}
+    st.session_state[FOCUS_KEY] = {"to": to, "n": int(previous.get("n", 0)) + 1}
 
 
 def render() -> None:
@@ -806,6 +921,8 @@ def render() -> None:
         overlays=frozenset({"coverage"}) if st.session_state["map_coverage"] else frozenset(),
         coverage=_coverage(),
         view=st.session_state.get("map_view"),
+        focus=st.session_state.get(FOCUS_KEY),
+        height=640,
     )
     action = handle_map_event(event, codes)
     if action == "gage":
@@ -815,48 +932,60 @@ def render() -> None:
     if notice:
         st.warning(notice)
     _status_line(st.session_state.get(RESULT_KEY))
-    st.toggle(
-        "Equation coverage",
-        key="map_coverage",
-        help="Tint jurisdictions by their regression library: verified, partial, NSS snapshot.",
-    )
-    st.caption(
-        "Click a stream to fill the coordinates, then Estimate. Right-click for Delineate, "
-        "Estimate, Copy and Zoom. From zoom 13 the StreamStats grid shows which cells snap. "
-        "Map style: DEM, Night, Green, top right of the map."
-    )
 
-    col_lat, col_lon, col_state = st.columns(3)
+    # The controls live in the sidebar, so the map can take the page's width.
+    side = st.sidebar
+    side.subheader("Ungaged site")
+    side.caption(
+        "Click a stream to fill the coordinates, then Estimate. Right-click the map for "
+        "Delineate, Estimate, Copy and Zoom. From zoom 13 the StreamStats grid shows which "
+        "cells snap. Map style: DEM, Night, Green, top right of the map."
+    )
+    if basin is not None:
+        side.caption("Map view")
+        col_point, col_basin = side.columns(2)
+        if col_point.button(
+            "Back to point", help="The point you clicked, at the zoom you clicked from"
+        ):
+            _focus("point")
+            st.rerun()  # the map, drawn above, takes the request on the next run
+        if col_basin.button("Whole basin", help="Zoom out to the whole basin"):
+            _focus("basin")
+            st.rerun()
+    col_lat, col_lon = side.columns(2)
     lat = col_lat.number_input(
         "Latitude", min_value=-90.0, max_value=90.0, format="%.6f", key="ungaged_lat"
     )
     lon = col_lon.number_input(
         "Longitude", min_value=-180.0, max_value=180.0, format="%.6f", key="ungaged_lon"
     )
-    state = col_state.selectbox(
-        "Jurisdiction", codes, format_func=_state_label, key="ungaged_state"
-    )
-    aeps: List[float] = st.multiselect(
+    state = side.selectbox("Jurisdiction", codes, format_func=_state_label, key="ungaged_state")
+    aeps: List[float] = side.multiselect(
         "AEPs (none selected: every AEP the regions publish)",
         AEP_CHOICES,
         format_func=lambda a: f"{a * 100:g}%",
     )
-    snapshot = st.checkbox(
+    snapshot = side.checkbox(
         "Allow NSS snapshot equations (not report-verified)",
         value=False,
         help="Needed for jurisdictions whose library is harvested from NSS.",
     )
-    extrapolate = st.checkbox("Allow extrapolation outside the calibrated range", value=False)
+    extrapolate = side.checkbox("Allow extrapolation outside the calibrated range", value=False)
     if extrapolate:
-        st.warning(EXTRAPOLATION_CAUTION)
+        side.warning(EXTRAPOLATION_CAUTION)
+    side.toggle(
+        "Equation coverage",
+        key="map_coverage",
+        help="Tint jurisdictions by their regression library: verified, partial, NSS snapshot.",
+    )
     for key in _KEPT:
         st.session_state[f"_{key}"] = st.session_state.get(key)
 
     badge = coverage_badge(state) if state is not None else BADGE_NONE
     if badge == BADGE_NONE:
-        st.info(f"{state}: {BADGE_NONE}.")
+        side.info(f"{state}: {BADGE_NONE}.")
     elif badge == BADGE_SNAPSHOT and not snapshot:
-        st.info(f"{state}: tick 'Allow NSS snapshot equations' to use its harvested set.")
+        side.info(f"{state}: tick 'Allow NSS snapshot equations' to use its harvested set.")
 
     current = {
         "lat": None if lat is None else float(lat),
@@ -885,7 +1014,7 @@ def render() -> None:
         _store(current)
         st.rerun()
 
-    if st.button("Estimate", type="primary"):
+    if side.button("Estimate", type="primary", use_container_width=True):
         if lat is None or lon is None:
             st.session_state[RESULT_KEY] = {
                 "outcome": {"error": "Enter a latitude and a longitude.", "kind": "input"}

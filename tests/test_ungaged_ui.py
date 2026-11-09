@@ -466,6 +466,76 @@ def test_out_of_range_refusal_cautions_before_offering_extrapolation(monkeypatch
     assert "to proceed" not in out["error"]
 
 
+def test_streamstats_failure_names_the_step_that_failed():
+    from flowfreq.streamstats import StreamStatsTransportError
+
+    exc = StreamStatsTransportError(
+        "StreamStats request to https://prodweba.streamstats.usgs.gov/ss-hydro/v1/"
+        "basin-characteristics/calculate-using-ssdelineate/ failed after 3 attempts"
+    )
+    text = ungaged_ui.streamstats_failure(exc)
+    assert text.startswith("StreamStats failed while computing basin characteristics")
+    assert "no answer after 3 tries" in text and "not your inputs" in text
+    exc = StreamStatsTransportError(
+        "StreamStats request to https://x/ss-delineate/v1/ failed after 3 attempts"
+    )
+    assert "delineating the watershed" in ungaged_ui.streamstats_failure(exc)
+
+
+def test_a_failed_estimate_keeps_the_earlier_basin():
+    basin = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "Point", "coordinates": [0, 0]},
+    }
+    inputs = {"lat": 35.0, "lon": -90.0, "state": "TN"}
+    previous = {"inputs": inputs, "outcome": {"basin": basin, "snap": (35.0, -90.0)}}
+    failed = {"error": "StreamStats failed", "kind": "network"}
+    kept = ungaged_ui.keep_basin(failed, previous, inputs)
+    assert kept["kept_basin"] is basin and kept["kept_snap"] == (35.0, -90.0)
+    assert ungaged_ui._basin_payload({"outcome": kept}) == (basin, (35.0, -90.0))
+    moved = {**inputs, "lat": 36.0}
+    assert "kept_basin" not in ungaged_ui.keep_basin(failed, previous, moved)
+    assert ungaged_ui.keep_basin({"estimate": object()}, previous, inputs).keys() == {"estimate"}
+
+
+def test_kept_basin_is_said_on_the_page():
+    basin = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "Point", "coordinates": [0, 0]},
+    }
+    at = _run({"outcome": {"error": "StreamStats failed", "kind": "network", "kept_basin": basin}})
+    assert any("still shown on the map" in i.value for i in at.info)
+
+
+def test_progress_indicators_say_what_is_happening():
+    from progress_ui import progress_html
+
+    html = progress_html("estimate", *ungaged_ui.estimate_text("TN"))
+    assert "ff-shed" in html and "ff-bars" in html and "TN's equations" in html
+    html = progress_html("delineate", *ungaged_ui.DELINEATE_TEXT)
+    assert "ff-shed" in html and "ff-bars" not in html and "ss-delineate" in html
+    assert "prefers-reduced-motion" in html
+
+
+def test_controls_are_in_the_sidebar():
+    at = _run({})
+    assert [b.label for b in at.sidebar.button] == ["Estimate"]
+    assert {n.label for n in at.sidebar.number_input} == {"Latitude", "Longitude"}
+
+
+def test_view_buttons_appear_with_a_basin():
+    basin = {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {"type": "Point", "coordinates": [0, 0]},
+    }
+    at = _run({"inputs": None, "outcome": {"basin": basin, "snap": (0.0, 0.0)}})
+    labels = [b.label for b in at.sidebar.button]
+    assert "Back to point" in labels and "Whole basin" in labels
+
+
 def test_no_caption_without_a_choice():
     assert ungaged_ui.chosen_set_caption(_estimate()) == ""
 
@@ -1037,6 +1107,10 @@ def test_run_estimate_network_error_is_short(monkeypatch):
     monkeypatch.setattr(ungaged_ui, "estimate_at_site", boom)
     out = ungaged_ui.run_estimate(36.3, -87.0, "TN", [], False)
     assert out == {
-        "error": "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov",
+        "error": (
+            "StreamStats failed while computing basin characteristics (StreamStats ss-hydro): "
+            "502 Bad Gateway from streamstats.usgs.gov. This is StreamStats' service, not your "
+            "inputs; try again in a few minutes."
+        ),
         "kind": "network",
     }

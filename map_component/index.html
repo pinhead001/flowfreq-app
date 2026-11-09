@@ -34,15 +34,13 @@
   .swatch:first-child { margin-left: 0; }
   .jump { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; z-index: 2; }
   .modes { position: absolute; right: 10px; top: 10px; display: flex; z-index: 2; }
-  .basin-nav { position: absolute; left: 10px; top: 44px; display: flex; gap: 4px; z-index: 2; }
-  .basin-nav[hidden] { display: none; }
   .modes button { border-radius: 0; margin-left: -1px; }
   .modes button:first-child { border-radius: 4px 0 0 4px; }
   .modes button:last-child { border-radius: 0 4px 4px 0; }
   .modes button.active { background: var(--chip-fg); color: var(--chip-bg); }
-  .jump button, .modes button, .menu button, .basin-nav button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  .jump button, .modes button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
     background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
-  .jump button:hover, .modes button:hover, .menu button:hover, .basin-nav button:hover { filter: brightness(1.25); }
+  .jump button:hover, .modes button:hover, .menu button:hover { filter: brightness(1.25); }
   .menu { position: absolute; z-index: 3; display: flex; flex-direction: column; min-width: 170px;
     background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 6px;
     box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; }
@@ -64,10 +62,6 @@
   <button type="button" data-jump="alaska">Alaska</button>
   <button type="button" data-jump="hawaii">Hawaii</button>
   <button type="button" data-jump="territories" title="Cycles: PR/USVI, Guam/CNMI, American Samoa">Territories</button>
-</div>
-<div class="basin-nav" id="basin-nav" hidden>
-  <button type="button" data-nav="point" title="Back to the point you clicked, at the zoom you clicked from">Back to point</button>
-  <button type="button" data-nav="basin" title="Zoom out to the whole basin">Whole basin</button>
 </div>
 <div class="modes" title="Map style">
   <button type="button" data-mode="dem">DEM</button>
@@ -313,6 +307,7 @@ function coverageTint(badge) {
 
 function createMap(args) {
   shadeMode = args.mode;
+  focusSeen = args.focus ? args.focus.n : null;  // a remounted map doesn't replay a click
   map = new maplibregl.Map({
     container: "map",
     // A remounted map (back from another page) opens where the user last clicked.
@@ -429,7 +424,8 @@ function emit(action, lngLat) {
     // render (Python done) clears it.
     const busy = document.getElementById("chip-busy");
     busy.textContent = action === "delineate"
-      ? "Delineating with StreamStats (10-30 s)..." : "Delineating and estimating (10-30 s)...";
+      ? "Delineating the watershed with StreamStats (5-30 s)..."
+      : "Delineating and computing basin characteristics with StreamStats (10-60 s), then estimating...";
     busy.hidden = false;
   }
   setValue({ action, lat: lngLat.lat, lon: lngLat.lng, zoom: map.getZoom(), nonce: ++nonce });
@@ -711,7 +707,6 @@ function applyBasin(basin, snap) {
     : EMPTY);
   // A new basin zooms out to its whole extent; "Back to point" returns to the click.
   basinBox = basin ? bbox(basin.geometry) : null;
-  document.getElementById("basin-nav").hidden = !basin;
   if (basinBox) map.fitBounds(basinBox, { padding: BASIN_PADDING, maxZoom: 15 });
 }
 
@@ -723,9 +718,13 @@ function basinPoint() {
   return marker ? marker.getLngLat().toArray() : null;
 }
 
-document.getElementById("basin-nav").addEventListener("click", (event) => {
-  const nav = event.target.dataset && event.target.dataset.nav;
-  if (!nav || !map) return;
+// The page's "Back to point" and "Whole basin" buttons, in the sidebar, send
+// {to, n}; the map moves when n changes and ignores the value it opens with.
+let focusSeen = null;
+function applyFocus(focus) {
+  if (!focus || focus.n === focusSeen) return;
+  focusSeen = focus.n;
+  const nav = focus.to;
   closeMenu();
   if (nav === "basin" && basinBox) {
     map.fitBounds(basinBox, { padding: BASIN_PADDING, maxZoom: 15 });
@@ -734,7 +733,7 @@ document.getElementById("basin-nav").addEventListener("click", (event) => {
     // The zoom the user clicked from, or a stream-level zoom if they clicked from far out.
     if (at) map.flyTo({ center: at, zoom: Math.max(clickZoom || 0, 13) });
   }
-});
+}
 
 // ---------------------------------------------------------------------------
 // StreamGrid: the StreamStats stream cells, from each state's own map service.
@@ -927,6 +926,7 @@ function applyAll(args, prev) {
   if (!prev || hash(prev) !== hash(args) || !same(prev.snap, args.snap)) {
     applyBasin(args.basin, args.snap);
   }
+  applyFocus(args.focus);
 }
 
 function onRender(args) {

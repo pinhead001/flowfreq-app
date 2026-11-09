@@ -95,16 +95,22 @@ def test_html_gage_popup_links():
 
 
 def test_html_zooms_out_to_a_new_basin_and_offers_the_way_back():
-    # A delineated basin fits the view; two buttons, shown only with a basin, move
-    # between the whole basin and the clicked point.
-    assert 'id="basin-nav" hidden' in HTML
-    assert 'data-nav="point"' in HTML and 'data-nav="basin"' in HTML
+    # A delineated basin fits the view; the page's sidebar buttons send {to, n}, and the
+    # map moves only when n changes, never on the value it opens with.
     apply = HTML.split("function applyBasin")[1].split("\nfunction ")[0]
-    assert 'getElementById("basin-nav").hidden = !basin' in apply
     assert "map.fitBounds(basinBox" in apply
+    assert "applyFocus(args.focus);" in HTML
+    assert "focusSeen = args.focus ? args.focus.n : null;" in HTML
+    assert "if (!focus || focus.n === focusSeen) return;" in HTML
     # The way back uses the zoom recorded at the click, never less than stream level.
     assert HTML.count("clickZoom = map.getZoom();") == 2
     assert "Math.max(clickZoom || 0, 13)" in HTML
+
+
+def test_prepare_args_passes_the_focus_request():
+    args = _args(focus={"to": "point", "n": 3})
+    assert args["focus"] == {"to": "point", "n": 3}
+    assert _args()["focus"] is None
 
 
 def test_html_has_the_four_jump_buttons():
