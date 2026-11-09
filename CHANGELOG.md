@@ -69,6 +69,18 @@ zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 
 - The gage page's daily chart loads vega 6.4.0, vega-lite 6.4.1 and vega-embed 7.3.0 from `vega_component/vendor/` (BSD-3 licences alongside) instead of cdn.jsdelivr.net; the files are the published ones, with the same SRI hashes, which a test recomputes.
 
+### Ungaged page: controls in the sidebar, progress you can see, the basin kept on failure
+
+- The inputs, Estimate, the coverage toggle and the map-view buttons are in the sidebar, and the map is taller.
+  "Back to point" and "Whole basin" now drive the map from the sidebar, shown whenever a basin is on it.
+- While StreamStats works, the page shows a watershed tracing itself (delineation) and frequency bars rising
+  (estimation), and says what is running: ss-delineate for the basin, ss-hydro for its characteristics, then the
+  state's equations. The map's busy chip says the same.
+- A failed Estimate at the point of an earlier basin keeps that basin on the map and says so. Estimate still asks
+  StreamStats again, since only its ss-hydro service computes the characteristics.
+- A StreamStats failure names the step that failed (delineation, basin characteristics or the NSS region lookup)
+  and says it is the service, not the inputs.
+
 ### Delineate without ss-hydro
 
 The map's *Delineate* uses `flowfreq.streamstats.delineate_watershed`: the polygon from
