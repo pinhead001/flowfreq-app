@@ -106,6 +106,18 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.25.0
+
+The pin moves from v0.24.0 to v0.25.0. Existing calls still work, but an estimate or a refusal can change. What it adds
+for the app:
+
+- **Texas** uses its regional sets before the statewide set, so fewer Texas sites ask for an equation set.
+- **Louisiana's south**, where NSS locates no current region, gets the 1998 Non-Pine Hills equations with a caution and
+  no interval, instead of no estimate.
+- **Maryland** estimates carry a caution that the 2023 Sixth Edition replaces these equations for state practice.
+- **Iowa** above a CCM of 3.87 uses the drainage-area-only set instead of refusing, and **AL and TN** intervals are
+  sharper. The caption names a preferred set passed over for a missing characteristic.
+
 ### flowfreq v0.24.0
 
 The pin moves from v0.23.0 to v0.24.0. Existing calls still work, but an estimate or a refusal can change. What it adds
