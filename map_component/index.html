@@ -34,13 +34,15 @@
   .swatch:first-child { margin-left: 0; }
   .jump { position: absolute; left: 10px; top: 10px; display: flex; gap: 4px; z-index: 2; }
   .modes { position: absolute; right: 10px; top: 10px; display: flex; z-index: 2; }
+  .basin-nav { position: absolute; left: 10px; top: 44px; display: flex; gap: 4px; z-index: 2; }
+  .basin-nav[hidden] { display: none; }
   .modes button { border-radius: 0; margin-left: -1px; }
   .modes button:first-child { border-radius: 4px 0 0 4px; }
   .modes button:last-child { border-radius: 0 4px 4px 0; }
   .modes button.active { background: var(--chip-fg); color: var(--chip-bg); }
-  .jump button, .modes button, .menu button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
+  .jump button, .modes button, .menu button, .basin-nav button { font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 4px;
     background: var(--chip-bg); color: var(--chip-fg); border: 1px solid var(--chip-border); }
-  .jump button:hover, .modes button:hover, .menu button:hover { filter: brightness(1.25); }
+  .jump button:hover, .modes button:hover, .menu button:hover, .basin-nav button:hover { filter: brightness(1.25); }
   .menu { position: absolute; z-index: 3; display: flex; flex-direction: column; min-width: 170px;
     background: var(--chip-bg); border: 1px solid var(--chip-border); border-radius: 6px;
     box-shadow: 0 6px 20px rgba(0,0,0,.35); overflow: hidden; }
@@ -62,6 +64,10 @@
   <button type="button" data-jump="alaska">Alaska</button>
   <button type="button" data-jump="hawaii">Hawaii</button>
   <button type="button" data-jump="territories" title="Cycles: PR/USVI, Guam/CNMI, American Samoa">Territories</button>
+</div>
+<div class="basin-nav" id="basin-nav" hidden>
+  <button type="button" data-nav="point" title="Back to the point you clicked, at the zoom you clicked from">Back to point</button>
+  <button type="button" data-nav="basin" title="Zoom out to the whole basin">Whole basin</button>
 </div>
 <div class="modes" title="Map style">
   <button type="button" data-mode="dem">DEM</button>
@@ -291,6 +297,9 @@ let shadeMode = null;    // the mode the shade sources currently request
 let appliedMode = null;  // the mode the map shows; a style button sets it before Python
 let pendingMode = null;  // a clicked style Python has not echoed back yet
 let gageSeq = 0, gridSeq = 0;  // drop responses that a later request has overtaken
+// Where the user was when they asked for a basin, so "Back to point" can return there.
+let clickZoom = null, basinBox = null;
+const BASIN_PADDING = { top: 80, bottom: 70, left: 50, right: 50 };
 // One fetch of the boundaries, shared by the map source and the StreamGrid state index.
 const statesData = fetch("./states.geojson").then((r) => r.json());
 
@@ -396,6 +405,7 @@ function createMap(args) {
     if (map.queryRenderedFeatures(e.point, { layers: ["gages"] }).length) return;  // the popup's
     // Move the orb now; Python's echo of the point arrives a rerun later.
     const at = e.lngLat.wrap();  // a click on a repeated world copy, back inside +-180
+    clickZoom = map.getZoom();
     applyPoint([at.lat, at.lng], appliedMode);
     emit("point", at);
   });
@@ -563,6 +573,7 @@ document.getElementById("menu").addEventListener("click", (event) => {
   if (!act || !menuAt) return;
   const at = menuAt;
   if (act === "delineate" || act === "estimate") {
+    clickZoom = map.getZoom();
     applyPoint([at.lat, at.lng], appliedMode);
     emit(act, at);
     closeMenu();
@@ -698,8 +709,32 @@ function applyBasin(basin, snap) {
   map.getSource("snap").setData(snap
     ? { type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [snap[1], snap[0]] } }
     : EMPTY);
-  if (basin) map.fitBounds(bbox(basin.geometry), { padding: { top: 50, bottom: 70, left: 50, right: 50 }, maxZoom: 15 });
+  // A new basin zooms out to its whole extent; "Back to point" returns to the click.
+  basinBox = basin ? bbox(basin.geometry) : null;
+  document.getElementById("basin-nav").hidden = !basin;
+  if (basinBox) map.fitBounds(basinBox, { padding: BASIN_PADDING, maxZoom: 15 });
 }
+
+// The point the basin was asked for: the snapped pour point if StreamStats moved it,
+// else the orb. Null when neither is on the map.
+function basinPoint() {
+  const snap = last && last.snap;
+  if (snap) return [snap[1], snap[0]];
+  return marker ? marker.getLngLat().toArray() : null;
+}
+
+document.getElementById("basin-nav").addEventListener("click", (event) => {
+  const nav = event.target.dataset && event.target.dataset.nav;
+  if (!nav || !map) return;
+  closeMenu();
+  if (nav === "basin" && basinBox) {
+    map.fitBounds(basinBox, { padding: BASIN_PADDING, maxZoom: 15 });
+  } else if (nav === "point") {
+    const at = basinPoint();
+    // The zoom the user clicked from, or a stream-level zoom if they clicked from far out.
+    if (at) map.flyTo({ center: at, zoom: Math.max(clickZoom || 0, 13) });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // StreamGrid: the StreamStats stream cells, from each state's own map service.

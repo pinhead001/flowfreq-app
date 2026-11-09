@@ -94,6 +94,19 @@ def test_html_gage_popup_links():
     assert "https://waterdata.usgs.gov/monitoring-location/" in HTML
 
 
+def test_html_zooms_out_to_a_new_basin_and_offers_the_way_back():
+    # A delineated basin fits the view; two buttons, shown only with a basin, move
+    # between the whole basin and the clicked point.
+    assert 'id="basin-nav" hidden' in HTML
+    assert 'data-nav="point"' in HTML and 'data-nav="basin"' in HTML
+    apply = HTML.split("function applyBasin")[1].split("\nfunction ")[0]
+    assert 'getElementById("basin-nav").hidden = !basin' in apply
+    assert "map.fitBounds(basinBox" in apply
+    # The way back uses the zoom recorded at the click, never less than stream level.
+    assert HTML.count("clickZoom = map.getZoom();") == 2
+    assert "Math.max(clickZoom || 0, 13)" in HTML
+
+
 def test_html_has_the_four_jump_buttons():
     for label in ("CONUS", "Alaska", "Hawaii", "Territories"):
         assert f">{label}<" in HTML or f'"{label}"' in HTML
