@@ -26,6 +26,12 @@ rather than only how to proceed. An extrapolated result carries a warning naming
 the calibrated range, the status line says so, and a comparison names the states affected. The table's column and
 the report's caveat already recorded it.
 
+### Basin map: back to the point after a basin zooms out
+
+A delineated basin already zooms the map out to its whole extent. Two buttons now appear under the jump buttons
+whenever a basin is shown: "Back to point" returns to the clicked point (or StreamStats' snapped pour point) at the
+zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
+
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
