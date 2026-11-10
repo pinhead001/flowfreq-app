@@ -10,7 +10,7 @@ import os
 import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -280,6 +280,91 @@ def run_site_ffa(
     return result
 
 
+#: The Flow Frequency page's fit before any sidebar choice is changed: a published regional
+#: skew, peak codes applied, regulated gages refused, MGBT picking the low-outlier
+#: threshold, the whole record. The sidebar's widgets start from these values, and the
+#: gage page draws its curve with them (:func:`fit_with_defaults`), so the two pages give
+#: the same answer for a site until the user changes a setting here.
+DEFAULT_FIT_SETTINGS: Dict[str, Any] = {
+    "skew_source": SKEW_SOURCE_PUBLISHED,
+    "regional_skew": None,
+    "regional_skew_se": None,
+    "pilf_override": 0.0,
+    "apply_peak_codes": True,
+    "allow_regulated": False,
+}
+
+#: The skew curves the frequency plot and tables show by default (the sidebar's
+#: "Skew Options" boxes start with only Weighted Skew ticked).
+DEFAULT_SKEW_LABELS: Tuple[str, ...] = ("Weighted Skew",)
+
+
+def fit_with_defaults(site_no: str, peak_df: pd.DataFrame) -> Dict[str, Any]:
+    """:func:`run_site_ffa` with :data:`DEFAULT_FIT_SETTINGS`: the gage page's fit.
+
+    Never raises, as :func:`run_site_ffa`.
+    """
+    return run_site_ffa(site_no, peak_df, **DEFAULT_FIT_SETTINGS)
+
+
+def frequency_figure(
+    ffa_result: Dict[str, Any],
+    site_no: str,
+    site_name: str,
+    *,
+    skew_labels: Sequence[str] = DEFAULT_SKEW_LABELS,
+    yscale: str = "log",
+    max_flow_label: Optional[Dict[str, Any]] = None,
+) -> plt.Figure:
+    """The library's frequency-curve figure for a successful fit.
+
+    The fitted LP3 curve with its 90% confidence limits and the annual peaks at their
+    plotting positions on an AEP axis (:func:`flowfreq.freq_plot.plot_frequency_curve`),
+    one curve per skew label. Shared by the Flow Frequency page (display and export) and
+    the gage page.
+    """
+    skew_curves = build_skew_curves_dict(ffa_result, list(skew_labels)) or None
+    return plot_frequency_curve(
+        ffa_result["b17c"],
+        site_name=site_name,
+        site_no=site_no,
+        skew_curves=skew_curves,
+        yscale=yscale,
+        max_flow_label=max_flow_label,
+    )
+
+
+def frequency_tables(
+    ffa_result: Dict[str, Any], skew_labels: Sequence[str] = DEFAULT_SKEW_LABELS
+) -> List[Tuple[str, pd.DataFrame]]:
+    """The frequency tables for a successful fit, formatted, with their headings.
+
+    One per skew label (:func:`flowfreq.workflow.compute_skew_tables`), or the fit's own
+    quantile table when no label applies. Shared by the Flow Frequency page and the gage
+    page.
+
+    Returns
+    -------
+    list of (str, pandas.DataFrame)
+        Markdown heading and the table from :func:`ffa_runner.format_quantile_df`.
+    """
+    tables = compute_skew_tables(ffa_result, list(skew_labels))
+    if tables:
+        return [
+            (
+                f"**Frequency Table — {label}** (Return intervals 1.5–500 years)",
+                format_quantile_df(tbl),
+            )
+            for label, tbl in tables.items()
+        ]
+    return [
+        (
+            "**Frequency Table** (Return intervals 1.5–500 years)",
+            format_quantile_df(ffa_result["quantile_df"]),
+        )
+    ]
+
+
 def describe_error(exc: Exception) -> str:
     """An exception for the page: web failures as one line naming the service."""
     if isinstance(exc, requests.RequestException):
@@ -287,18 +372,34 @@ def describe_error(exc: Exception) -> str:
     return str(exc)
 
 
-def show_ffa_error(site_no: str, ffa_result: Dict[str, Any]) -> None:
-    """Show a failed or refused fit, with what the user can do about it."""
+#: What to do about a regulation refusal on the Flow Frequency page.
+REGULATED_HINT = (
+    "To fit it anyway, tick **Analyze regulated gage** under Flood "
+    "Frequency Analysis in the sidebar, then click Update Plots (or download again)."
+)
+#: The same, from the gage page, which has no sidebar settings of its own.
+REGULATED_HINT_GAGE_PAGE = (
+    "To fit it anyway, open it on the Flow Frequency page (**Open in Bulletin 17C** "
+    "below), tick **Analyze regulated gage** under Flood Frequency Analysis in the "
+    "sidebar there, then click Update Plots."
+)
+
+
+def show_ffa_error(
+    site_no: str, ffa_result: Dict[str, Any], regulated_hint: str = REGULATED_HINT
+) -> None:
+    """Show a failed or refused fit, with what the user can do about it.
+
+    ``regulated_hint`` says how to fit a refused regulated gage anyway, from the page
+    showing the error.
+    """
     message = ffa_result.get("error")
     if not message:
         return
     kind = ffa_result.get("error_kind", "fit")
     if kind == "regulated":
         st.error(f"Flood frequency analysis refused for USGS {site_no}: {message}")
-        st.info(
-            "To fit it anyway, tick **Analyze regulated gage** under Flood "
-            "Frequency Analysis in the sidebar, then click Update Plots (or download again)."
-        )
+        st.info(regulated_hint)
     elif kind == "skew":
         st.error(f"Flood frequency analysis not run for USGS {site_no}: {message}")
     else:
@@ -419,9 +520,20 @@ requested = requested_page(st.query_params)
 linked_site = st.query_params.get("site", "")
 linked_site = linked_site if _SITE_RE.fullmatch(linked_site) else ""
 
+#: The Flow Frequency page's fit, figure, tables and error display, handed to the gage
+#: page so that its in-place curve is this page's analysis, not a second one.
+GAGE_PAGE_CURVE = gage_ui.CurveHooks(
+    fit=fit_with_defaults,
+    figure=frequency_figure,
+    tables=frequency_tables,
+    show_error=lambda site_no, result: show_ffa_error(
+        site_no, result, regulated_hint=REGULATED_HINT_GAGE_PAGE
+    ),
+)
+
 if requested == PAGE_GAGE:
     if linked_site:
-        gage_ui.render(linked_site)
+        gage_ui.render(linked_site, curve=GAGE_PAGE_CURVE)
     else:
         gage_ui.back_button()
         st.error("That is not a valid USGS site number (8 to 15 digits).")
@@ -565,7 +677,7 @@ if enable_ffa:
     skew_source = st.sidebar.radio(
         "Skew Source",
         SKEW_SOURCE_CHOICES,
-        index=0,
+        index=SKEW_SOURCE_CHOICES.index(DEFAULT_FIT_SETTINGS["skew_source"]),
         help=(
             "Bulletin 17C weights the station skew with a regional skew from a published "
             "study and gives no national default. 'Published regional study' looks the "
@@ -599,7 +711,7 @@ if enable_ffa:
         )
     apply_peak_codes = st.sidebar.checkbox(
         "Apply NWIS peak codes",
-        value=True,
+        value=DEFAULT_FIT_SETTINGS["apply_peak_codes"],
         help=(
             "Treat qualification codes as peakfq does: code 7 peaks are historic, "
             "3/O/6/C peaks are removed. Untick to fit every peak as an exact value."
@@ -607,7 +719,7 @@ if enable_ffa:
     )
     allow_regulated = st.sidebar.checkbox(
         "Analyze regulated gage",
-        value=False,
+        value=DEFAULT_FIT_SETTINGS["allow_regulated"],
         help=(
             "Gages classed regulated (GAGES-II dam storage, or peak code 6) are refused: "
             "Bulletin 17C assumes unregulated flows. Tick to fit one anyway; the override "
@@ -633,14 +745,20 @@ if enable_ffa:
         show_quantile_lines = []
         show_max_ri = False
     st.sidebar.markdown("**Skew Options**")
-    skew_station_on = st.sidebar.checkbox("Station Skew", value=False)
-    skew_weighted_on = st.sidebar.checkbox("Weighted Skew", value=True)
-    skew_regional_on = st.sidebar.checkbox("Regional Skew", value=False)
+    skew_station_on = st.sidebar.checkbox(
+        "Station Skew", value="Station Skew" in DEFAULT_SKEW_LABELS
+    )
+    skew_weighted_on = st.sidebar.checkbox(
+        "Weighted Skew", value="Weighted Skew" in DEFAULT_SKEW_LABELS
+    )
+    skew_regional_on = st.sidebar.checkbox(
+        "Regional Skew", value="Regional Skew" in DEFAULT_SKEW_LABELS
+    )
     st.sidebar.markdown("**Low Outliers (PILFs)**")
     pilf_override = st.sidebar.number_input(
         "PILF Threshold Override (cfs)",
         min_value=0.0,
-        value=0.0,
+        value=DEFAULT_FIT_SETTINGS["pilf_override"],
         step=100.0,
         format="%.0f",
         help=(
@@ -650,20 +768,20 @@ if enable_ffa:
         ),
     )
 else:
-    skew_source = SKEW_SOURCE_PUBLISHED
-    regional_skew = None
-    regional_skew_se = None
-    apply_peak_codes = True
-    allow_regulated = False
+    skew_source = DEFAULT_FIT_SETTINGS["skew_source"]
+    regional_skew = DEFAULT_FIT_SETTINGS["regional_skew"]
+    regional_skew_se = DEFAULT_FIT_SETTINGS["regional_skew_se"]
+    apply_peak_codes = DEFAULT_FIT_SETTINGS["apply_peak_codes"]
+    allow_regulated = DEFAULT_FIT_SETTINGS["allow_regulated"]
     show_freq_curve = False
     label_max_on_freq = False
     show_peak_timeseries = False
     show_quantile_lines = []
     show_max_ri = False
-    skew_station_on = False
-    skew_weighted_on = True
-    skew_regional_on = False
-    pilf_override = 0.0
+    skew_station_on = "Station Skew" in DEFAULT_SKEW_LABELS
+    skew_weighted_on = "Weighted Skew" in DEFAULT_SKEW_LABELS
+    skew_regional_on = "Regional Skew" in DEFAULT_SKEW_LABELS
+    pilf_override = DEFAULT_FIT_SETTINGS["pilf_override"]
 
 # Download button
 download_data = st.sidebar.button("Download Data", type="primary") or auto_run
@@ -1166,7 +1284,6 @@ if st.session_state.gage_data:
                     ]
                     if on
                 ]
-                skew_curves = build_skew_curves_dict(ffa_result, selected_skew_labels) or None
                 # Build max flow label if enabled
                 max_flow_label = None
                 if label_max_on_freq and site_no in st.session_state.peak_data:
@@ -1194,11 +1311,11 @@ if st.session_state.gage_data:
                                 else None
                             )
                             max_flow_label = {"flow": max_flow, "year": max_year, "ri": ri}
-                freq_fig = plot_frequency_curve(
-                    ffa_result["b17c"],
-                    site_name=gage_info.get("name", ""),
-                    site_no=site_no,
-                    skew_curves=skew_curves,
+                freq_fig = frequency_figure(
+                    ffa_result,
+                    site_no,
+                    gage_info.get("name", ""),
+                    skew_labels=selected_skew_labels,
                     yscale=yscale_freq,
                     max_flow_label=max_flow_label,
                 )
@@ -1217,8 +1334,6 @@ if st.session_state.gage_data:
                     ]
                     if on
                 ]
-                skew_tables = compute_skew_tables(ffa_result, selected_skew_labels)
-
                 # The library's screen of the peaks Bulletin 17C fitted (run_ffa).
                 if ffa_result.get("stationarity"):
                     gage_ui.stationarity_section(ffa_result["stationarity"])
@@ -1242,21 +1357,9 @@ if st.session_state.gage_data:
 
                     show_fit_provenance(ffa_result)
 
-                    if skew_tables:
-                        for label, tbl in skew_tables.items():
-                            st.markdown(
-                                f"**Frequency Table — {label}** (Return intervals 1.5–500 years)"
-                            )
-                            st.dataframe(
-                                format_quantile_df(tbl),
-                                use_container_width=True,
-                            )
-                    else:
-                        st.markdown("**Frequency Table** (Return intervals 1.5–500 years)")
-                        st.dataframe(
-                            format_quantile_df(ffa_result["quantile_df"]),
-                            use_container_width=True,
-                        )
+                    for heading, table in frequency_tables(ffa_result, selected_skew_labels):
+                        st.markdown(heading)
+                        st.dataframe(table, use_container_width=True)
 
         st.divider()
 
@@ -1371,9 +1474,6 @@ if st.session_state.gage_data:
                             ]
                             if on
                         ]
-                        skew_curves_export = (
-                            build_skew_curves_dict(ffa_result, selected_skew_labels) or None
-                        )
                         freq_fig_for_export = None
                         if show_freq_curve and ffa_result.get("b17c"):
                             # Build max flow label for export if enabled
@@ -1409,11 +1509,11 @@ if st.session_state.gage_data:
                                             "year": max_year,
                                             "ri": ri,
                                         }
-                            freq_fig_for_export = plot_frequency_curve(
-                                ffa_result["b17c"],
-                                site_name=gage_info.get("name", ""),
-                                site_no=site_no,
-                                skew_curves=skew_curves_export,
+                            freq_fig_for_export = frequency_figure(
+                                ffa_result,
+                                site_no,
+                                gage_info.get("name", ""),
+                                skew_labels=selected_skew_labels,
                                 yscale=yscale_freq,
                                 max_flow_label=max_flow_label_export,
                             )

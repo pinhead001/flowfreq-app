@@ -779,3 +779,152 @@ def test_page_without_enough_peaks_offers_no_report(monkeypatch):
     gage_ui.report_files.clear()
     labels = [e.proto.label for e in _run(monkeypatch).get("download_button")]
     assert not any(label.startswith("Stationarity") for label in labels)
+
+
+# --- The Bulletin 17C curve in place ---------------------------------------------------
+
+FIT_CALLS: list = []
+
+
+def _fake_fit(site_no, peaks):
+    FIT_CALLS.append((site_no, len(peaks)))
+    return {
+        "error": None,
+        "converged": True,
+        "parameters": {},
+        "quantile_df": pd.DataFrame({"Flow (cfs)": [1.0]}),
+    }
+
+
+def _fake_figure(result, site_no, name):
+    # A bare Figure, not pyplot: AppTest runs the page in a thread, and pyplot there would
+    # start whatever GUI backend is the default (the app itself selects Agg).
+    from matplotlib.figure import Figure
+
+    fig = Figure()
+    fig.add_subplot().set_title(f"{site_no} {name}")
+    return fig
+
+
+def _fake_tables(result):
+    return [("**Frequency Table — Weighted Skew**", pd.DataFrame({"Flow (cfs)": ["1"]}))]
+
+
+def _hooks(fit=_fake_fit, show_error=None):
+    def _show(site_no, result):
+        import streamlit as st
+
+        st.error(f"Flood frequency analysis failed for USGS {site_no}: {result['error']}")
+
+    return gage_ui.CurveHooks(
+        fit=fit, figure=_fake_figure, tables=_fake_tables, show_error=show_error or _show
+    )
+
+
+def _curve_page():
+    import gage_ui as page
+
+    page.render("12340500", curve=page._TEST_HOOKS)
+
+
+@pytest.fixture
+def curve_page(monkeypatch):
+    """Run the gage page with stand-in hooks; the loaders as in :func:`_run`."""
+    FIT_CALLS.clear()
+    gage_ui.clear_caches()
+
+    def run(hooks=None, peaks=LONG_PEAKS):
+        monkeypatch.setattr(gage_ui, "_TEST_HOOKS", hooks or _hooks(), raising=False)
+        monkeypatch.setattr(gage_ui, "load_site", lambda site: {"info": INFO})
+        monkeypatch.setattr(gage_ui, "load_peaks", lambda site: {"peaks": peaks})
+        monkeypatch.setattr(gage_ui, "load_daily", lambda site: {"daily": DAILY})
+        return AppTest.from_function(_curve_page, default_timeout=30).run()
+
+    yield run
+    gage_ui.clear_caches()
+
+
+def _draw_button(at):
+    found = [b for b in at.button if b.label == "Draw the Bulletin 17C curve"]
+    return found[0] if found else None
+
+
+def test_curve_waits_for_the_button(curve_page):
+    at = curve_page()
+    assert not at.exception
+    assert any(s.value == "Bulletin 17C frequency curve" for s in at.subheader)
+    assert _draw_button(at) is not None
+    assert FIT_CALLS == []  # EMA costs about a second: nothing is fitted on arrival
+    assert not at.get("image")
+
+
+def test_button_draws_the_curve_and_tables_in_place(curve_page):
+    at = curve_page()
+    _draw_button(at).click()
+    at.run()
+    assert not at.exception
+    assert FIT_CALLS == [(SITE, len(LONG_PEAKS))]
+    assert at.get("image")  # the figure
+    assert _draw_button(at) is None
+    assert any("Frequency Table" in m.value for m in at.markdown)
+    assert any("default settings" in c.value for c in at.caption)
+    # The way on to the full analysis is still there.
+    assert _b17c(at).url == f"?page=flowfrequency&site={SITE}&run=1"
+
+
+def test_curve_stays_drawn_and_is_not_refitted_on_rerun(curve_page):
+    at = curve_page()
+    _draw_button(at).click()
+    at.run()
+    at.run()  # any other widget's rerun
+    assert not at.exception
+    assert at.get("image")
+    assert len(FIT_CALLS) == 1  # cached
+
+
+def test_a_failed_fit_shows_the_flow_frequency_page_message(curve_page):
+    def refused(site_no, peaks):
+        FIT_CALLS.append(site_no)
+        return {"error": "too few peaks", "error_kind": "fit"}
+
+    at = curve_page(_hooks(fit=refused))
+    _draw_button(at).click()
+    at.run()
+    assert not at.exception
+    assert any(
+        e.value == f"Flood frequency analysis failed for USGS {SITE}: too few peaks"
+        for e in at.error
+    )
+    assert not at.get("image")
+
+
+def test_a_skew_lookup_failure_is_not_cached(monkeypatch):
+    gage_ui.clear_caches()
+    calls = []
+
+    def fit(site_no, peaks):
+        calls.append(site_no)
+        return {"error": "lookup failed", "error_kind": "skew"}
+
+    hooks = _hooks(fit=fit)
+    assert gage_ui.fit_curve(SITE, LONG_PEAKS, hooks)["error"] == "lookup failed"
+    gage_ui.fit_curve(SITE, LONG_PEAKS, hooks)
+    assert calls == [SITE, SITE]
+    gage_ui.clear_caches()
+
+
+def test_a_fit_is_cached_per_site_and_peak_record():
+    gage_ui.clear_caches()
+    FIT_CALLS.clear()
+    hooks = _hooks()
+    gage_ui.fit_curve(SITE, LONG_PEAKS, hooks)
+    gage_ui.fit_curve(SITE, LONG_PEAKS, hooks)
+    gage_ui.fit_curve(SITE, LONG_PEAKS.iloc[:-1], hooks)  # a revised record refits
+    assert len(FIT_CALLS) == 2
+    gage_ui.clear_caches()
+
+
+def test_without_hooks_the_page_has_no_curve_section(monkeypatch):
+    at = _run(monkeypatch)
+    assert not at.exception
+    assert not any(s.value == "Bulletin 17C frequency curve" for s in at.subheader)

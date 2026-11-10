@@ -43,6 +43,25 @@ zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
   threshold from the daily record: two events a year, or one where two would pull the
   threshold below the 75th percentile of daily flow (a snowmelt river).
 
+### Gage page: the Bulletin 17C curve in place
+
+- **Draw the Bulletin 17C curve** on the gage page fits the annual peaks and draws the frequency
+  curve there, under the stationarity screen, without leaving the page: the fitted LP3 curve with
+  its 90% confidence limits and the peaks at their plotting positions on an AEP axis, the
+  frequency table in an expander. It is the Flow Frequency page's own analysis, not a second
+  one: the same `run_site_ffa` call with the page's default settings (published regional skew,
+  NWIS peak codes applied, regulated gages refused, MGBT, the whole record), the same figure
+  and tables. A failed or refused fit shows the Flow Frequency page's message; a regulated
+  gage's hint says to tick **Analyze regulated gage** on the Flow Frequency page, which
+  **Open in Bulletin 17C** still opens for other settings and year ranges.
+- Nothing is fitted until the button is pressed (EMA takes about a second). The fit is cached
+  per site and peak record for six hours, and the curve stays drawn on later reruns of the
+  page. A failed regional-skew lookup is not cached.
+- The Flow Frequency page's sidebar defaults, its frequency figure (display and ZIP export) and
+  its frequency tables now come from `DEFAULT_FIT_SETTINGS`, `DEFAULT_SKEW_LABELS`,
+  `frequency_figure` and `frequency_tables`, which the gage page uses too, so the two pages
+  cannot drift apart. No change to what the Flow Frequency page shows.
+
 ### Map library and label glyphs served by the app
 
 - MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.

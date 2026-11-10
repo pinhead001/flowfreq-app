@@ -507,10 +507,16 @@ def test_gage_param_renders_the_gage_page(monkeypatch):
     import gage_ui
 
     calls = []
-    monkeypatch.setattr(gage_ui, "render", lambda site: calls.append(site))
+    monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: calls.append((site, curve)))
     at = _app_with({"page": "gage", "site": "12340500"})
     assert not at.exception
-    assert calls == ["12340500"]
+    assert [site for site, _ in calls] == ["12340500"]
+    # The page gets the Flow Frequency page's own analysis for its in-place curve.
+    curve = calls[0][1]
+    assert isinstance(curve, gage_ui.CurveHooks)
+    assert curve.fit.__name__ == "fit_with_defaults"
+    assert curve.figure.__name__ == "frequency_figure"
+    assert curve.tables.__name__ == "frequency_tables"
 
 
 def test_gaged_param_prefills_the_gage_number():
@@ -647,7 +653,7 @@ def test_a_link_to_a_page_moves_the_radio_after_a_hand_choice():
 def test_back_from_a_gage_page_returns_to_the_ungaged_page(monkeypatch):
     import gage_ui
 
-    monkeypatch.setattr(gage_ui, "render", lambda site: None)
+    monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: None)
     at = _app_with({})
     _page_radio(at).set_value("Ungaged site")
     at.run()
@@ -660,3 +666,198 @@ def test_back_from_a_gage_page_returns_to_the_ungaged_page(monkeypatch):
     at.run()
     assert not at.exception
     assert _page_radio(at).value == "Ungaged site"
+
+
+# ---------------------------------------------------------------------------
+# The gage page's Bulletin 17C curve in place: the Flow Frequency page's analysis
+# ---------------------------------------------------------------------------
+
+
+def _plain_peaks():
+    """Big Sandy's systematic record without codes (code 6 would have it refused)."""
+    import pandas as pd
+
+    peaks = _coded_peaks()
+    return peaks.assign(qualification_code=pd.array([None] * len(peaks), dtype="string"))
+
+
+def _published_skew(app_module, monkeypatch):
+    from flowfreq.regional_skew import RegionalSkew
+
+    rs = RegionalSkew(
+        state="TN",
+        skew_region="Test region",
+        skew=-0.1,
+        skew_mse=0.12,
+        citation="A study for the test",
+    )
+    monkeypatch.setattr(app_module, "lookup_published_skew", lambda site_no: rs)
+
+
+def test_default_fit_settings_are_the_sidebar_defaults():
+    """The gage page fits with DEFAULT_FIT_SETTINGS; the Flow Frequency page's sidebar must
+    start from the same values, or the two pages disagree before anyone changes a thing."""
+    at = _app_with({"page": "flowfrequency", "site": "12340500"})  # FFA ticked, no run
+    assert not at.exception
+    import streamlit_app as app
+
+    defaults = app.DEFAULT_FIT_SETTINGS
+    skew = next(r for r in at.sidebar.radio if r.label == "Skew Source")
+    boxes = {c.label: c.value for c in at.sidebar.checkbox}
+    pilf = next(n for n in at.sidebar.number_input if n.label.startswith("PILF"))
+    assert skew.value == defaults["skew_source"]
+    assert boxes["Apply NWIS peak codes"] is defaults["apply_peak_codes"]
+    assert boxes["Analyze regulated gage"] is defaults["allow_regulated"]
+    assert pilf.value == defaults["pilf_override"]
+    shown = [lbl for lbl in ("Station Skew", "Weighted Skew", "Regional Skew") if boxes[lbl]]
+    assert tuple(shown) == app.DEFAULT_SKEW_LABELS
+
+
+def test_fit_with_defaults_is_run_site_ffa_with_the_defaults(app_module, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        app_module, "run_site_ffa", lambda site_no, peaks, **kw: seen.append(kw) or {}
+    )
+    app_module.fit_with_defaults("03606500", _plain_peaks())
+    assert seen == [app_module.DEFAULT_FIT_SETTINGS]
+
+
+def test_fit_with_defaults_matches_the_flow_frequency_page_fit(app_module, monkeypatch):
+    """Unmocked EMA: the gage page's fit is the Flow Frequency page's default fit."""
+    _published_skew(app_module, monkeypatch)
+    ours = app_module.fit_with_defaults("03606500", _plain_peaks())
+    theirs = app_module.run_site_ffa(
+        "03606500",
+        _plain_peaks(),
+        skew_source=app_module.SKEW_SOURCE_PUBLISHED,
+        regional_skew=None,
+        regional_skew_se=None,
+        pilf_override=0.0,
+        apply_peak_codes=True,
+        allow_regulated=False,
+    )
+    assert ours["error"] is None, ours["error"]
+    assert ours["parameters"]["regional_skew"] == pytest.approx(-0.1)
+    assert ours["quantile_df"].equals(theirs["quantile_df"])
+
+
+def test_frequency_figure_and_tables_from_a_real_fit(app_module, monkeypatch):
+    import matplotlib.pyplot as plt
+
+    _published_skew(app_module, monkeypatch)
+    result = app_module.fit_with_defaults("03606500", _plain_peaks())
+    fig = app_module.frequency_figure(result, "03606500", "Big Sandy")
+    ax = fig.axes[0]
+    assert "Exceedance Probability" in ax.get_xlabel()
+    labels = [h.get_label() for h in ax.get_lines()] + [c.get_label() for c in ax.collections]
+    assert "Observed Annual Peaks" in labels
+    plt.close(fig)
+    tables = app_module.frequency_tables(result)
+    assert [h for h, _ in tables] == [
+        "**Frequency Table — Weighted Skew** (Return intervals 1.5–500 years)"
+    ]
+    assert "Upper 90% CI" in tables[0][1].columns
+
+
+def test_frequency_tables_fall_back_to_the_fit_table(app_module, monkeypatch):
+    _published_skew(app_module, monkeypatch)
+    result = app_module.fit_with_defaults("03606500", _plain_peaks())
+    [(heading, table)] = app_module.frequency_tables(result, skew_labels=())
+    assert heading.startswith("**Frequency Table** ")
+    assert len(table) == len(result["quantile_df"])
+
+
+def test_gage_page_regulation_refusal_points_to_the_flow_frequency_page(app_module, monkeypatch):
+    shown = []
+
+    class _St:
+        def error(self, msg):
+            shown.append(("error", msg))
+
+        def info(self, msg):
+            shown.append(("info", msg))
+
+    monkeypatch.setattr(app_module, "st", _St())
+    app_module.GAGE_PAGE_CURVE.show_error(
+        "01426500", app_module._ffa_error("classified regulated", kind="regulated")
+    )
+    # The Flow Frequency page's own message, then a hint that fits a page with no sidebar.
+    assert shown[0] == (
+        "error",
+        "Flood frequency analysis refused for USGS 01426500: classified regulated",
+    )
+    assert "Flow Frequency page" in shown[1][1] and "Analyze regulated gage" in shown[1][1]
+
+
+def test_flow_frequency_page_draws_through_the_shared_helpers(app_module):
+    source = _source(app_module)
+    assert source.count("plot_frequency_curve(") == 1  # inside frequency_figure only
+    assert source.count("frequency_figure(") == 3  # its def, the display, the export
+    assert source.count("frequency_tables(ffa_result, selected_skew_labels)") == 1
+
+
+def _gage_curve_page():
+    import gage_ui as page
+
+    page.render("03606500", curve=page._TEST_HOOKS)
+
+
+def _gage_page_with_real_curve(app_module, monkeypatch, peaks):
+    """The gage page with the app's own hooks: real run_site_ffa and plot, offline (the
+    loaders and the published-skew lookup are stand-ins)."""
+    from streamlit.testing.v1 import AppTest
+
+    import gage_ui
+
+    _published_skew(app_module, monkeypatch)
+    info = {"site_no": "03606500", "name": "Big Sandy River at Bruceton, TN"}
+    daily = _one_year_daily()
+    monkeypatch.setattr(gage_ui, "_TEST_HOOKS", app_module.GAGE_PAGE_CURVE, raising=False)
+    monkeypatch.setattr(gage_ui, "load_site", lambda site: {"info": info})
+    monkeypatch.setattr(gage_ui, "load_peaks", lambda site: {"peaks": peaks})
+    monkeypatch.setattr(gage_ui, "load_daily", lambda site: {"daily": daily})
+    gage_ui.clear_caches()
+    at = AppTest.from_function(_gage_curve_page, default_timeout=60).run()
+    next(b for b in at.button if b.label == "Draw the Bulletin 17C curve").click()
+    return at.run()
+
+
+def _one_year_daily():
+    import pandas as pd
+
+    days = pd.date_range("2000-10-01", "2001-09-30", freq="D", name="date")
+    return pd.DataFrame({"flow_cfs": 100.0}, index=days)
+
+
+def test_gage_page_draws_the_real_curve_in_place(app_module, monkeypatch):
+    import pandas as pd
+
+    from tests.fixtures.big_sandy import SYSTEMATIC_PEAKS
+
+    years = sorted(SYSTEMATIC_PEAKS)
+    peaks = _plain_peaks().assign(
+        peak_date=pd.to_datetime([f"{y}-03-01" for y in years]),
+    )
+    at = _gage_page_with_real_curve(app_module, monkeypatch, peaks)
+    assert not at.exception
+    assert not at.error
+    assert at.get("image")
+    assert any("Weighted Skew" in m.value for m in at.markdown)
+
+
+def test_gage_page_shows_the_regulation_refusal(app_module, monkeypatch):
+    import pandas as pd
+
+    from tests.fixtures.big_sandy import SYSTEMATIC_PEAKS
+
+    years = sorted(SYSTEMATIC_PEAKS)
+    peaks = _coded_peaks().assign(  # its last peak carries code 6
+        peak_date=pd.to_datetime([f"{y}-03-01" for y in years]),
+    )
+    at = _gage_page_with_real_curve(app_module, monkeypatch, peaks)
+    assert not at.exception
+    assert any(
+        e.value.startswith("Flood frequency analysis refused for USGS 03606500:") for e in at.error
+    )
+    assert any("Analyze regulated gage" in i.value for i in at.info)
+    assert not at.get("image")
