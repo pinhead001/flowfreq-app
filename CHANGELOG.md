@@ -32,6 +32,21 @@ A delineated basin already zooms the map out to its whole extent. Two buttons no
 whenever a basin is shown: "Back to point" returns to the clicked point (or StreamStats' snapped pour point) at the
 zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 
+### Gage page: dams and impervious cover beside a change point
+
+- When the stationarity screen finds a change point, the gage page lists the dated basin changes
+  (`stationarity.basin_change_events`): each National Inventory of Dams dam holding at least 10% of the
+  basin's NID storage, at its completion year, and the year half of that storage was in place. The table
+  gives each one's distance from the change point and marks those within 5 years as candidate causes.
+  They are drawn as dotted green lines on the peak chart, named in the change-point flag, and passed to
+  the stationarity report downloads.
+- The basin is the USGS NLDI basin of the gage (NHDPlus catchments upstream), not a StreamStats
+  delineation, so dams need no StreamStats request. The NID is downloaded once per server and cached.
+- Impervious cover (the NLCD epoch in which it reached 5%) needs StreamStats basin characteristics, so it
+  is requested only with a "Check impervious cover (StreamStats)" button. Without it, or when StreamStats
+  fails or refuses, the page says so and shows the dams alone. Records with no change point make none of
+  these requests.
+
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
