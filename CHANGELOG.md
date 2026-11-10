@@ -62,6 +62,16 @@ zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 
 - MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
 
+### Gage page: raster hydrograph
+
+- A raster hydrograph under the summary hydrograph: every day of the daily record as a
+  cell, one row per water year (earliest at the top), October 1 to September 30 across,
+  coloured by daily mean flow on a log scale (yellow dry to purple wet). Days with no
+  published value stay blank; zero-flow days, which a log scale cannot place, are brown;
+  provisional days are outlined in the daily chart's orange. Days sit on a fixed leap-year
+  calendar, so February 29 has its own column (blank in other years) and a calendar date
+  is in the same column every year. Drawn from the daily record the page already loads.
+
 ### Resizable period on the gage page; Flow Frequency page
 
 - **Gage page:** drag either end of the box on the strip under the daily chart to lengthen
