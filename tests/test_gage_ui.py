@@ -4,10 +4,13 @@ how the page shows a site, its periods of record and its links, not the USGS ser
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
+import requests
+from flowfreq.regulation import NLCD_IMPERVIOUS_CODES
 
 pytest.importorskip("streamlit", reason="Streamlit not installed")
 
@@ -266,7 +269,7 @@ def test_page_plots_the_daily_record(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert any("Daily mean flow" in h.value for h in at.subheader)
-    assert len(_charts(at)) == 1  # annual peaks
+    assert len(_charts(at)) == 2  # the raster hydrograph and the annual peaks
     # The daily record, in the resizable-brush component (vega_component).
     assert len(at.get("component_instance")) == 1
 
@@ -928,3 +931,384 @@ def test_without_hooks_the_page_has_no_curve_section(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert not any(s.value == "Bulletin 17C frequency curve" for s in at.subheader)
+
+
+# --- Basin changes beside a change point (NID dams, NLCD impervious) -----------------
+# Offline throughout: the NLDI basin, the NID and StreamStats are all stand-ins.
+
+BASIN = {  # a 1-degree square, as NLDI's basin geometry comes back
+    "type": "Polygon",
+    "coordinates": [[[-90.0, 36.0], [-89.0, 36.0], [-89.0, 37.0], [-90.0, 37.0], [-90.0, 36.0]]],
+}
+DAMS = pd.DataFrame(
+    {
+        "nid_id": ["TN00001", "TN00002", "TN00003", "KY00009"],
+        "latitude": [36.5, 36.2, 36.8, 38.5],  # the last is outside the basin
+        "longitude": [-89.5, -89.8, -89.2, -85.0],
+        "nid_storage_acft": [90000.0, 2000.0, 8000.0, 500000.0],
+        "year_completed": [1980.0, 1931.0, float("nan"), 1950.0],
+    }
+)
+
+
+def _with_clear(method):
+    def fn(*args):
+        return method(*args)
+
+    fn.clear = lambda: None  # clear_caches() calls .clear() on the cached fetchers
+    return fn
+
+
+class _Basin:
+    """Stand-ins for the NLDI basin and StreamStats, counting calls."""
+
+    def __init__(self):
+        self.basin_calls = self.impervious_calls = 0
+        self.basin = BASIN
+        self.impervious = {2001: 2.1, 2006: 3.4, 2011: 5.6, 2016: 7.0}
+
+    def fetch_basin(self, site_no):
+        self.basin_calls += 1
+        if isinstance(self.basin, Exception):
+            raise self.basin
+        return self.basin
+
+    def fetch_impervious(self, region, lat, lon):
+        self.impervious_calls += 1
+        self.impervious_args = (region, lat, lon)
+        if isinstance(self.impervious, Exception):
+            raise self.impervious
+        return self.impervious
+
+
+@pytest.fixture(autouse=True)
+def fake_basin(monkeypatch):
+    """Every test in this module: no NLDI, NID download or StreamStats request."""
+    fake = _Basin()
+    monkeypatch.setattr(gage_ui, "_fetch_basin", _with_clear(fake.fetch_basin))
+    monkeypatch.setattr(gage_ui, "_fetch_impervious", _with_clear(fake.fetch_impervious))
+    monkeypatch.setattr(gage_ui, "_nid", lambda: SimpleNamespace(dams=DAMS))
+    return fake
+
+
+def test_basin_events_date_the_large_dams_in_the_basin():
+    out = gage_ui.load_basin_events(SITE)
+    assert out["dams_checked"] and out["n_dams"] == 3  # the Kentucky dam is outside
+    dam = [(label, year) for label, year in out["events"] if "TN00001" in label]
+    assert len(dam) == 1 and dam[0][1] == 1980 and "acre-ft" in dam[0][0]
+    assert not any("TN00002" in label for label, _ in out["events"])  # 2% of storage
+    assert any("half of today" in label and year == 1980 for label, year in out["events"])
+    assert any("no completion year" in n for n in out["notes"])  # TN00003
+    assert "1 of 3 NID dams have no completion year." in out["notes"]  # a sentence
+
+
+def test_basin_events_without_the_nldi_basin_say_so_and_never_raise(fake_basin):
+    fake_basin.basin = requests.ConnectionError(
+        "HTTPSConnectionPool(host='api.water.usgs.gov', port=443): Max retries exceeded"
+    )
+    out = gage_ui.load_basin_events(SITE)
+    assert out["events"] == [] and out["n_dams"] is None and not out["dams_checked"]
+    assert any("NLDI" in n and "api.water.usgs.gov" in n for n in out["notes"])
+    assert not any("Max retries" in n for n in out["notes"])  # the detail goes to the log
+
+
+def test_basin_events_without_the_nid_say_so(monkeypatch):
+    def broken():
+        raise OSError("no network")
+
+    monkeypatch.setattr(gage_ui, "_nid", broken)
+    out = gage_ui.load_basin_events(SITE)
+    assert not out["dams_checked"] and out["events"] == []
+    assert any("National Inventory of Dams" in n for n in out["notes"])
+
+
+def test_basin_events_date_impervious_cover_crossing_the_urban_threshold():
+    out = gage_ui.load_basin_events(SITE, impervious={2001: 2.1, 2006: 3.4, 2011: 5.6})
+    assert ("basin impervious cover reached 5% (NLCD 2006 to 2011)", 2011) in out["events"]
+    skipped = gage_ui.load_basin_events(SITE, impervious={2001: 2.1, 2011: 9.0}, region="CO")
+    assert not any("impervious" in label for label, _ in skipped["events"])
+    assert any("CO" in n for n in skipped["notes"])  # unverified there, said so
+
+
+class _Response:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
+def test_the_nldi_basin_is_read_from_its_feature_collection(monkeypatch):
+    monkeypatch.undo()  # the real _fetch_basin, with requests.get stood in
+    seen = {}
+    body = {"type": "FeatureCollection", "features": [{"geometry": BASIN, "properties": {}}]}
+
+    def get(url, params=None, timeout=None):
+        seen.update(url=url, params=params)
+        return _Response(body)
+
+    monkeypatch.setattr(gage_ui.requests, "get", get)
+    gage_ui._fetch_basin.clear()
+    assert gage_ui._fetch_basin("03606500") == BASIN
+    assert seen["url"].endswith("/nldi/linked-data/nwissite/USGS-03606500/basin")
+    assert "streamstats" not in seen["url"] and seen["params"] == {"f": "json"}
+    body = {"type": "FeatureCollection", "features": []}
+    gage_ui._fetch_basin.clear()
+    with pytest.raises(ValueError, match="no basin polygon"):
+        gage_ui._fetch_basin("03606500")
+    gage_ui._fetch_basin.clear()
+
+
+def test_impervious_cover_asks_streamstats_for_the_nlcd_codes(monkeypatch):
+    monkeypatch.undo()  # the real _fetch_impervious, with the StreamStats call stood in
+    seen = {}
+
+    def delineate(region, lat, lon, *, characteristic_codes=None, **kw):
+        seen.update(region=region, codes=list(characteristic_codes))
+        return SimpleNamespace(
+            characteristics={
+                "LC06IMP": SimpleNamespace(value=3.0),
+                "LC11IMP": SimpleNamespace(value=6.5),
+            }
+        )
+
+    monkeypatch.setattr(gage_ui, "delineate_and_get_characteristics", delineate)
+    gage_ui._fetch_impervious.clear()
+    assert gage_ui.load_impervious("TN", 36.1, -88.1) == {"series": {2006: 3.0, 2011: 6.5}}
+    assert seen["region"] == "TN" and set(NLCD_IMPERVIOUS_CODES) <= set(seen["codes"])
+    gage_ui._fetch_impervious.clear()
+
+
+def test_impervious_cover_failure_is_an_answer_not_a_traceback(fake_basin):
+    response = requests.Response()
+    response.status_code, response.reason = 403, "Forbidden"
+    response.url = "https://streamstats.usgs.gov/ss-hydro/v1/basin-characteristics/calculate"
+    fake_basin.impervious = requests.HTTPError("403 Client Error", response=response)
+    out = gage_ui.load_impervious("TN", 36.1, -88.1)
+    assert "StreamStats" in out["error"] and "403" in out["error"]
+    fake_basin.impervious = ValueError("The point does not snap to a stream")
+    assert gage_ui.load_impervious("TN", 36.1, -88.1) == {
+        "error": "The point does not snap to a stream"
+    }
+
+
+def test_peak_chart_draws_basin_changes_within_the_record():
+    events = [("dam TN00001 completed", 1980), ("dam built long before", 1900)]
+    spec = gage_ui.peak_chart(STEPPED, change_year=1980, events=events).to_dict()
+    rules = [layer for layer in spec["layer"] if layer["mark"]["type"] == "rule"]
+    event_rule = next(r for r in rules if r["mark"].get("color") == gage_ui.EVENT_COLOUR)
+    assert {t["field"] for t in event_rule["encoding"]["tooltip"]} == {"year", "event"}
+    rows = spec["datasets"][event_rule["data"]["name"]]
+    assert [r["year"] for r in rows] == [1980]  # 1900 is before the record: left off
+
+
+def test_peak_chart_with_events_but_no_change_point():
+    spec = gage_ui.peak_chart(STEPPED, events=[("dam", 1975)]).to_dict()
+    assert [layer["mark"]["type"] for layer in spec["layer"]] == ["bar", "rule"]
+
+
+def test_basin_events_table_measures_from_the_change_point():
+    frame = gage_ui.basin_events_frame([("dam B", 1990), ("dam A", 1978)], 1980)
+    assert frame["Year"].tolist() == [1978, 1990]
+    assert frame["Basin change"].tolist() == ["Dam A", "Dam B"]
+    assert frame["From change point"].tolist() == ["-2 yr", "+10 yr"]
+    assert frame["Candidate cause"].tolist() == ["yes", ""]
+
+
+def test_page_shows_basin_changes_beside_the_change_point(monkeypatch, fake_basin):
+    gage_ui.report_files.clear()
+    at = _run(monkeypatch, peaks=STEPPED)
+    assert not at.exception
+    assert any("Basin changes beside the 19" in m.value for m in at.markdown)
+    table = at.dataframe[0].value
+    assert 1980 in table["Year"].tolist() and "yes" in table["Candidate cause"].tolist()
+    flagged = [w.value for w in at.warning if "Stationarity screen" in w.value][0]
+    assert "TN00001" in flagged  # the change-point flag names the dam
+    captions = " ".join(c.value for c in at.caption)
+    assert "Impervious cover (NLCD) not checked" in captions and "StreamStats" in captions
+    assert "Dotted green lines" in captions
+    assert fake_basin.impervious_calls == 0  # StreamStats only when asked
+    assert [b.label for b in at.button if b.key == "gage_impervious_button"] == [
+        "Check impervious cover (StreamStats)"
+    ]
+
+
+def test_page_adds_impervious_cover_when_asked(monkeypatch, fake_basin):
+    gage_ui.report_files.clear()
+    at = _run(monkeypatch, peaks=STEPPED)
+    at.button(key="gage_impervious_button").click().run()
+    assert not at.exception
+    assert fake_basin.impervious_calls == 1
+    assert fake_basin.impervious_args == ("MT", INFO["lat"], INFO["lon"])
+    captions = " ".join(c.value for c in at.caption)
+    assert "Impervious cover (StreamStats, NLCD): 2001 2.1%" in captions
+    assert 2011 in at.dataframe[0].value["Year"].tolist()  # crossed 5% between 2006 and 2011
+    assert not any(b.key == "gage_impervious_button" for b in at.button)
+    at.run()  # a later rerun reuses the answer
+    assert fake_basin.impervious_calls == 1
+
+
+def test_page_says_when_streamstats_refuses_impervious_cover(monkeypatch, fake_basin):
+    fake_basin.impervious = ValueError("StreamStats does not delineate in MT")
+    gage_ui.report_files.clear()
+    at = _run(monkeypatch, peaks=STEPPED)
+    at.button(key="gage_impervious_button").click().run()
+    assert not at.exception
+    captions = " ".join(c.value for c in at.caption)
+    assert "Impervious cover could not be checked: StreamStats does not delineate" in captions
+    assert [b.label for b in at.button if b.key == "gage_impervious_button"] == [
+        "Try StreamStats again"
+    ]
+    assert at.dataframe[0].value["Year"].tolist()  # the dams are still there
+
+
+def test_page_without_the_basin_still_screens(monkeypatch, fake_basin):
+    fake_basin.basin = requests.ConnectionError("could not connect")
+    gage_ui.report_files.clear()
+    at = _run(monkeypatch, peaks=STEPPED)
+    assert not at.exception
+    assert any("Change point in 19" in w.value for w in at.warning)
+    assert any("Dams not checked" in c.value for c in at.caption)
+    assert not at.dataframe
+
+
+def test_no_change_point_no_basin_lookup(monkeypatch, fake_basin):
+    at = _run(monkeypatch, peaks=STATIONARY)
+    assert not at.exception
+    assert fake_basin.basin_calls == 0
+    assert not any("Basin changes" in m.value for m in at.markdown)
+
+
+def test_report_names_the_basin_changes():
+    gage_ui.report_files.clear()
+    files = gage_ui.report_files(SITE, "Stepped", STEPPED, None, (("dam TN00001 completed", 1980),))
+    assert "dam TN00001 completed" in files["markdown"]
+    gage_ui.report_files.clear()
+
+
+# --- Raster hydrograph ------------------------------------------------------------------
+
+
+def _cells(dates, flows, codes=None):
+    index = pd.DatetimeIndex(pd.to_datetime(dates), name="date")
+    frame = pd.DataFrame({"flow_cfs": flows}, index=index)
+    if codes is not None:
+        frame["qualification_code"] = codes
+    return gage_ui.raster_frame(frame)
+
+
+def test_raster_days_count_from_october_first_on_a_leap_year_calendar():
+    dates = [
+        "1999-10-01", "2000-02-28", "2000-02-29", "2000-03-01", "2000-09-30",
+        "2000-10-01", "2001-02-28", "2001-03-01", "2001-09-30",
+    ]  # fmt: skip
+    cells = _cells(dates, np.arange(1.0, 10.0))
+    assert cells["water_year"].tolist() == [2000] * 5 + [2001] * 4
+    # February 29 is slot 152 every year; a year without one leaves it empty, so March 1
+    # is 153 and September 30 is 366 in both.
+    assert cells["day"].tolist() == [1, 151, 152, 153, 366, 1, 151, 153, 366]
+    assert cells["date"].tolist()[2] == "Feb 29, 2000"
+
+
+def test_raster_leaves_missing_days_out_and_keeps_zero_flows():
+    cells = _cells(["2010-10-01", "2010-10-02", "2010-10-05"], [5.0, np.nan, 0.0])
+    assert cells["day"].tolist() == [1, 5]  # the NaN day and the unpublished ones: no row
+    assert cells["flow_cfs"].tolist() == [5.0, 0.0]
+
+
+def test_raster_frame_sorts_and_marks_provisional_days():
+    cells = _cells(["2021-10-03", "2021-10-01"], [2.0, 1.0], codes=["P:e", "A"])
+    assert cells["day"].tolist() == [1, 3]
+    assert cells["provisional"].tolist() == [False, True]
+    assert cells["note"].tolist() == ["", "provisional, estimated"]
+    assert not _cells(["2021-10-01"], [1.0])["provisional"].any()  # no codes: none
+
+
+def test_provisional_spans_break_at_gaps_and_water_years():
+    dates = pd.date_range("2024-09-28", "2024-10-04", freq="D").delete(5)  # Oct 3 missing
+    codes = ["A", "P", "P", "P", "P", "P"]  # Sep 29 to Oct 4, but for Oct 3
+    spans = gage_ui.provisional_spans(_cells(dates, np.ones(len(dates)), codes))
+    assert spans.to_dict("records") == [
+        {"water_year": 2024, "first": 365, "last": 366},
+        {"water_year": 2025, "first": 1, "last": 2},
+        {"water_year": 2025, "first": 4, "last": 4},
+    ]
+    assert gage_ui.provisional_spans(_cells(dates, np.ones(len(dates)))).empty
+
+
+def _raster(daily):
+    import altair as alt
+
+    with alt.data_transformers.disable_max_rows():
+        return gage_ui.raster_hydrograph_chart(daily).to_dict()
+
+
+def test_raster_colours_by_log_flow_and_draws_zero_flows_apart():
+    spec = _raster(DAILY)  # DAILY has a zero day and provisional days
+    flowing, zero, provisional = spec["layer"]
+    color = flowing["encoding"]["color"]
+    assert color["field"] == "flow_cfs" and color["scale"]["type"] == "log"
+    assert {"filter": "datum.flow_cfs > 0"} in flowing["transform"]
+    assert {"filter": "datum.flow_cfs <= 0"} in zero["transform"]
+    assert zero["mark"]["color"] == gage_ui.ZERO_FLOW_COLOR
+    assert provisional["mark"]["stroke"] == gage_ui.PROVISIONAL_COLOR
+    assert provisional["mark"]["fill"] is None
+    for layer in spec["layer"]:
+        assert layer["encoding"]["y"]["field"] == "water_year"
+        assert layer["encoding"]["x"]["field"] == "start"
+
+
+def test_raster_gives_every_water_year_a_row_even_an_empty_one():
+    days = pd.date_range("1990-10-01", "1995-09-30", freq="D", name="date")
+    daily = pd.DataFrame({"flow_cfs": 10.0}, index=days)
+    daily = daily[(daily.index < "1992-10-01") | (daily.index >= "1993-10-01")]  # no WY 1993
+    spec = _raster(daily)
+    for layer in spec["layer"]:
+        assert layer["encoding"]["y"]["scale"]["domain"] == [1991, 1992, 1993, 1994, 1995]
+    assert len(spec["layer"]) == 2  # no codes, no provisional outline
+
+
+def test_a_provisional_run_across_the_empty_february_29_stays_one_run():
+    dates = pd.date_range("2023-02-27", "2023-03-02", freq="D")
+    spans = gage_ui.provisional_spans(_cells(dates, np.ones(4), ["P"] * 4))
+    assert spans.to_dict("records") == [{"water_year": 2023, "first": 150, "last": 154}]
+
+
+def test_raster_of_a_century_is_quick_and_a_sensible_size():
+    import time
+
+    days = pd.date_range("1925-10-01", "2025-09-30", freq="D", name="date")
+    daily = pd.DataFrame(
+        {"flow_cfs": np.random.default_rng(5).lognormal(5.0, 1.0, len(days))}, index=days
+    )
+    start = time.perf_counter()
+    spec = _raster(daily)
+    assert time.perf_counter() - start < 5.0  # about half a second on a laptop
+    assert spec["height"] == 400
+    axis_years = spec["layer"][0]["encoding"]["y"]["axis"]["values"]
+    assert axis_years[0] == 1930 and all(y % 10 == 0 for y in axis_years)
+
+
+def test_page_shows_the_raster_hydrograph(monkeypatch):
+    at = _run(monkeypatch, peaks=LONG_PEAKS, daily=LONG_DAILY)
+    assert not at.exception
+    assert any(c.value.startswith("Raster hydrograph:") for c in at.caption)
+    titles = [getattr(c.proto, "spec", "") for c in _charts(at)]
+    assert any('"Raster hydrograph"' in t for t in titles)
+
+
+def test_page_without_daily_values_has_no_raster(monkeypatch):
+    at = _run(monkeypatch, daily=None)
+    assert not any(c.value.startswith("Raster hydrograph") for c in at.caption)
+
+
+def test_page_draws_the_raster_of_a_long_record(monkeypatch):
+    # Past Altair's 5,000-row limit: the page must not trip MaxRowsError.
+    days = pd.date_range("1975-10-01", "2025-09-30", freq="D", name="date")
+    daily = pd.DataFrame({"flow_cfs": np.linspace(0.0, 500.0, len(days))}, index=days)
+    at = _run(monkeypatch, peaks=LONG_PEAKS, daily=daily)
+    assert not at.exception
+    assert any(c.value.startswith("Raster hydrograph:") for c in at.caption)

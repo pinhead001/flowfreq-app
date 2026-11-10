@@ -32,8 +32,10 @@ Then, roughly in order of value:
    the radio and the URL agree; Back itself still does not rerun.
 4. **`use_container_width` deprecation:** move to `width="stretch"` and raise the Streamlit
    floor from 1.40 (every chart in the app).
-5. **Stationarity follow-ups:** the flags in the ZIP export and the multi-gage comparison;
-   NID/NLCD basin events for attribution (needs the delineated basin).
+5. **Stationarity follow-ups:** the flags in the ZIP export and the multi-gage comparison.
+   NID/NLCD basin events are on the gage page (NLDI basin for the dams; impervious cover on
+   request from StreamStats); the StreamStats impervious path is untested live, and the
+   Flow Frequency page's screen does not yet use the events.
 6. **Library questions for flowfreq:** 02087500's 1968 change point is reported with no
    candidate cause although 45 of its peaks carry code 6 (`attribute_change_point`'s 5-year
    window?); `USGSgage.peak_summary()` to cut the gage page's repeated site lookup.
@@ -77,7 +79,7 @@ Outstanding outside the phases: the live Delineate/Estimate check once StreamSta
   exactly as `regional_skew_at_huc` applies them, or the map would mislead.
 - **Live re-check of Estimate on the map.** Delineate passed live on 2026-11-01; Estimate and
   "Re-run with WY" wait for StreamStats' `ss-hydro`, which still returned 502 that day.
-- **Gage page, next.** Raster hydrograph; direct data downloads. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window. The Bulletin 17C curve in place, on a button, with the Flow Frequency page's default fit (2026-11-09; not yet opened in a browser). Stationarity flags under the peak chart (v0.20.0). The screen with the Flow Frequency page's Bulletin 17C results. Summary hydrograph, flow-duration curve and the `stationarity_report` downloads (2026-11-01). Not yet: NID/NLCD basin events for attribution (need the delineated basin).
+- **Gage page, next.** Direct data downloads. Move `gage_ui.raster_frame` (years by day-of-water-year reshaping) into `flowfreq.hydrograph` at the next pin bump. Done in `gage_ui.py`: site summary, periods of record, annual-peak chart, the zoomable daily chart, Bulletin 17C in a new window. Bulletin 17C curve in place, on a button, with the Flow Frequency page's default fit (2026-11-09; not yet opened in a browser). Stationarity flags under the peak chart (v0.20.0). The screen with the Flow Frequency page's Bulletin 17C results. Summary hydrograph, flow-duration curve and the `stationarity_report` downloads (2026-11-01). Raster hydrograph (2026-11-09). NID dam and NLCD impervious events beside a change point (2026-11-09).
 - **Daily chart, from the 2026-10-31 evaluation: done** (hover readout with status, peak dots,
   in-chart log/linear keeping the zoom, quick periods, water-year lines, CSV downloads,
   provisional days in orange, parallel loading, `run=1` auto-run on the Flow Frequency page).

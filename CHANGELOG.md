@@ -32,6 +32,21 @@ A delineated basin already zooms the map out to its whole extent. Two buttons no
 whenever a basin is shown: "Back to point" returns to the clicked point (or StreamStats' snapped pour point) at the
 zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 
+### Gage page: dams and impervious cover beside a change point
+
+- When the stationarity screen finds a change point, the gage page lists the dated basin changes
+  (`stationarity.basin_change_events`): each National Inventory of Dams dam holding at least 10% of the
+  basin's NID storage, at its completion year, and the year half of that storage was in place. The table
+  gives each one's distance from the change point and marks those within 5 years as candidate causes.
+  They are drawn as dotted green lines on the peak chart, named in the change-point flag, and passed to
+  the stationarity report downloads.
+- The basin is the USGS NLDI basin of the gage (NHDPlus catchments upstream), not a StreamStats
+  delineation, so dams need no StreamStats request. The NID is downloaded once per server and cached.
+- Impervious cover (the NLCD epoch in which it reached 5%) needs StreamStats basin characteristics, so it
+  is requested only with a "Check impervious cover (StreamStats)" button. Without it, or when StreamStats
+  fails or refuses, the page says so and shows the dams alone. Records with no change point make none of
+  these requests.
+
 ### Gage page: summary hydrograph, flow-duration curve, stationarity report
 
 - A summary hydrograph (daily flow percentiles by day of the water year,
@@ -65,6 +80,16 @@ zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 ### Map library and label glyphs served by the app
 
 - MapLibre GL JS 5.6.0 and the Noto Sans Italic glyphs for the water labels are bundled in `map_component/` (`vendor/`, BSD-3 licence; `fonts/`, SIL Open Font License) instead of loading from unpkg.com and MapLibre's demo tile server. The map no longer depends on two outside hosts, one of them a demo service. The bundled files are byte-identical to the published ones (the same SRI hashes); a test checks the hashes and that the glyph ranges cover every bundled name.
+
+### Gage page: raster hydrograph
+
+- A raster hydrograph under the summary hydrograph: every day of the daily record as a
+  cell, one row per water year (earliest at the top), October 1 to September 30 across,
+  coloured by daily mean flow on a log scale (yellow dry to purple wet). Days with no
+  published value stay blank; zero-flow days, which a log scale cannot place, are brown;
+  provisional days are outlined in the daily chart's orange. Days sit on a fixed leap-year
+  calendar, so February 29 has its own column (blank in other years) and a calendar date
+  is in the same column every year. Drawn from the daily record the page already loads.
 
 ### Resizable period on the gage page; Flow Frequency page
 
