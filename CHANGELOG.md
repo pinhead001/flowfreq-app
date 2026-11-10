@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Ungaged page: estimate from basin characteristics you enter
+
+A "Basin characteristics (no StreamStats)" form on the ungaged page takes a region and the characteristics its
+equations read, with each one's units and calibrated range, and runs flowfreq's `estimate_from_characteristics`. It
+opens by default for Florida, Michigan and Nebraska, where StreamStats has no stream grid, and StreamStats' refusal
+there points to it. It needs flowfreq 0.26 and stays hidden on an older pin.
+
 ### Ungaged page: names the set the library chose
 
 Where sets overlap and the library picks one by a stated limit or preference, the page now names it,

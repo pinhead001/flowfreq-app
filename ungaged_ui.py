@@ -45,6 +45,14 @@ from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
 from progress_ui import working
 
+try:  # flowfreq 0.26: the regression from characteristics the user supplies
+    from flowfreq import estimate_from_characteristics
+except ImportError:  # an older pin: the form stays hidden
+    estimate_from_characteristics = None  # type: ignore[assignment]
+
+#: Jurisdictions StreamStats has no stream grid for: the form opens there by default.
+NO_STREAMSTATS = ("FL", "MI", "NE")
+
 logger = logging.getLogger(__name__)
 
 #: Map events that carry a point; ``mode`` (the on-map style buttons) carries a style and
@@ -255,7 +263,12 @@ def streamstats_refusal(exc: Exception, state: str) -> Optional[Dict[str, str]]:
             "error": (
                 f"StreamStats does not delineate basins in {_state_name(state)}: its stream "
                 "grid does not cover the state, so no point there can be delineated. The "
-                "basin characteristics would have to come from somewhere else."
+                "basin characteristics would have to come from somewhere else"
+                + (
+                    ": enter them under 'Basin characteristics' on this page."
+                    if estimate_from_characteristics is not None
+                    else "."
+                )
             ),
             "kind": "unsupported_region",
             "detail": str(exc),
@@ -611,6 +624,163 @@ def chosen_set_caption(estimate: SiteEstimate) -> str:
         )
         text += "."
     return text
+
+
+def characteristic_inputs(state: str, region: str) -> List[Dict[str, Any]]:
+    """The characteristics a region's equations read, with units and calibrated range.
+
+    Parameters
+    ----------
+    state : str
+        Jurisdiction code with a published library.
+    region : str
+        Library region code.
+
+    Returns
+    -------
+    list of dict
+        ``{"code", "units", "minimum", "maximum"}`` per characteristic, in first-use order;
+        a range is the widest across the region's AEPs.
+    """
+    from flowfreq.regression.equations import input_codes
+    from flowfreq.regression.library import load_state
+
+    lib = load_state(state, warn=False)
+    out: Dict[str, Dict[str, Any]] = {}
+    for eq in (e for e in lib.equations if e.region_code == region):
+        known = {v.code: v for v in (*eq.variables, *eq.applicability)}
+        for code in input_codes(eq):
+            v = known.get(code)
+            row = out.setdefault(
+                code, {"code": code, "units": "", "minimum": None, "maximum": None}
+            )
+            if v is None:
+                continue
+            row["units"] = row["units"] or v.units
+            if v.minimum is not None:
+                row["minimum"] = (
+                    v.minimum if row["minimum"] is None else min(row["minimum"], v.minimum)
+                )
+            if v.maximum is not None:
+                row["maximum"] = (
+                    v.maximum if row["maximum"] is None else max(row["maximum"], v.maximum)
+                )
+    return list(out.values())
+
+
+def run_from_characteristics(
+    state: str,
+    region: str,
+    values: Dict[str, float],
+    lat: float,
+    lon: float,
+    aeps: Optional[Sequence[float]],
+    allow_nss_snapshot: bool,
+    *,
+    allow_extrapolation: bool = False,
+) -> Dict[str, Any]:
+    """Run :func:`flowfreq.estimate_from_characteristics` for the page. Never raises.
+
+    Returns
+    -------
+    dict
+        ``{"estimate": SiteEstimate}``, or ``{"error": str, "kind": str}`` with ``kind`` one
+        of ``equations``, ``out_of_range``, ``input`` or ``unexpected``.
+    """
+    if estimate_from_characteristics is None:
+        return {
+            "error": "This flowfreq version can't estimate from characteristics.",
+            "kind": "input",
+        }
+    try:
+        estimate = estimate_from_characteristics(
+            state,
+            values,
+            region=region,
+            lat=lat,
+            lon=lon,
+            aeps=list(aeps) if aeps else None,
+            allow_nss_snapshot=allow_nss_snapshot,
+            allow_extrapolation=allow_extrapolation,
+        )
+    except EquationsUnavailable as exc:
+        return {"error": str(exc), "kind": "equations"}
+    except OutOfRangeError as exc:
+        return {
+            "error": (
+                f"{exc}. These characteristics are outside the range the equations were fit on, "
+                "so no estimate was made. Ticking 'Allow extrapolation' gives one anyway, but the "
+                "published error doesn't hold there and the method may not apply."
+            ),
+            "kind": "out_of_range",
+        }
+    except (ValueError, KeyError) as exc:
+        return {"error": str(exc.args[0]) if exc.args else str(exc), "kind": "input"}
+    except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
+        logger.exception("estimate from characteristics failed")
+        return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    return {"estimate": estimate}
+
+
+def _characteristics_form(state: Optional[str], current: Dict[str, Any]) -> None:
+    """The regression from basin characteristics the user enters, for sites without StreamStats."""
+    if estimate_from_characteristics is None or state is None:
+        return
+    if coverage_badge(state) not in (BADGE_VERIFIED, BADGE_PARTIAL):
+        return
+    from flowfreq.regression.library import load_state
+
+    regions = load_state(state, warn=False).regions
+    with st.expander("Basin characteristics (no StreamStats)", expanded=state in NO_STREAMSTATS):
+        st.caption(
+            (
+                f"StreamStats has no stream grid for {_state_name(state)}, so enter the basin's "
+                "characteristics here. "
+                if state in NO_STREAMSTATS
+                else "For a basin StreamStats can't delineate: enter its characteristics here. "
+            )
+            + "Measure each as the report defines it, and pick the region from the report's map."
+        )
+        region = st.selectbox("Region", regions, key=f"chars_region_{state}")
+        values: Dict[str, Optional[float]] = {}
+        for row in characteristic_inputs(state, region):
+            span = ""
+            if row["minimum"] is not None and row["maximum"] is not None:
+                span = f"Calibrated range {row['minimum']:g} to {row['maximum']:g}"
+            values[row["code"]] = st.number_input(
+                f"{row['code']}" + (f" ({row['units']})" if row["units"] else ""),
+                value=None,
+                format="%g",
+                help=span or None,
+                key=f"chars_{state}_{region}_{row['code']}",
+            )
+        if st.button("Estimate from these characteristics"):
+            missing = [k for k, v in values.items() if v is None]
+            if current["lat"] is None or current["lon"] is None:
+                outcome: Dict[str, Any] = {
+                    "error": "Enter the site's latitude and longitude too (they're recorded with the estimate).",
+                    "kind": "input",
+                }
+            elif missing:
+                outcome = {"error": f"Enter {', '.join(missing)}.", "kind": "input"}
+            else:
+                with working(
+                    "bars",
+                    f"Applying {state}'s equations",
+                    "From the characteristics you entered; no StreamStats call.",
+                ):
+                    outcome = run_from_characteristics(
+                        state,
+                        region,
+                        {k: float(v) for k, v in values.items() if v is not None},
+                        current["lat"],
+                        current["lon"],
+                        current["aeps"],
+                        current["snapshot"],
+                        allow_extrapolation=current["extrapolate"],
+                    )
+            st.session_state[RESULT_KEY] = {"inputs": current, "outcome": outcome}
+            st.rerun()  # the status line, under the map, shows it
 
 
 def _show_estimate(estimate: SiteEstimate) -> None:
@@ -1023,6 +1193,8 @@ def render() -> None:
         else:
             _store(current)
             st.rerun()  # so the map, drawn above, receives the basin
+
+    _characteristics_form(state, current)
 
     result = st.session_state.get(RESULT_KEY)
     if not result:
