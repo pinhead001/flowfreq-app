@@ -343,9 +343,9 @@ def test_stale_result_cleared_when_inputs_change():
 def _run_matching(result):
     """Run with the widgets set to INPUTS and ``result`` stored."""
     at = AppTest.from_function(_page, default_timeout=30).run()
-    at.number_input[0].set_value(INPUTS["lat"])
-    at.number_input[1].set_value(INPUTS["lon"])
-    at.selectbox[0].set_value("TN")
+    at.number_input(key="ungaged_lat").set_value(INPUTS["lat"])
+    at.number_input(key="ungaged_lon").set_value(INPUTS["lon"])
+    at.selectbox(key="ungaged_state").set_value("TN")
     at.checkbox[0].check()
     at.session_state["ungaged_result"] = result
     return at.run()
@@ -589,13 +589,13 @@ def test_point_event_fills_inputs_and_runs_nothing(monkeypatch, recorders):
     assert at.session_state["ungaged_lat"] == 46.87
     assert at.session_state["ungaged_lon"] == -113.99
     assert at.session_state["ungaged_state"] == "MT"
-    assert at.number_input[0].value == 46.87
+    assert at.number_input(key="ungaged_lat").value == 46.87
     assert recorders == {"estimate": [], "delineate": []}
 
 
 def test_same_nonce_is_ignored_on_rerun(monkeypatch, recorders):
     at, _ = _with_map(monkeypatch, _event("point"))
-    at.number_input[0].set_value(45.0)
+    at.number_input(key="ungaged_lat").set_value(45.0)
     at.run()
     assert at.session_state["ungaged_lat"] == 45.0  # the old click did not come back
 
@@ -653,8 +653,8 @@ def test_estimate_event_calls_estimate(monkeypatch, recorders):
 def test_typed_coordinates_reach_the_component(monkeypatch, recorders):
     at, stub = _with_map(monkeypatch, None)
     assert stub.calls[-1]["point"] is None
-    at.number_input[0].set_value(44.5)
-    at.number_input[1].set_value(-110.0)
+    at.number_input(key="ungaged_lat").set_value(44.5)
+    at.number_input(key="ungaged_lon").set_value(-110.0)
     at.run()
     assert stub.calls[-1]["point"] == (44.5, -110.0)
 
@@ -953,7 +953,7 @@ def test_a_typed_edit_clears_the_drawn_basin(monkeypatch, recorders):
     outcome = {"basin": BASIN, "snap": (46.9312, -113.9688), "area_sq_mi": 142.3}
     at, stub = _seeded_matching(monkeypatch, outcome)
     assert stub.calls[-1]["basin"] is BASIN
-    at.number_input[0].set_value(45.5)
+    at.number_input(key="ungaged_lat").set_value(45.5)
     at.run()
     assert stub.calls[-1]["basin"] is None
 
