@@ -4,10 +4,14 @@
 state, HUC, location), its periods of record for daily flow and annual peaks, the daily
 record (zoomable to a period of interest, and as a raster hydrograph) and the annual peaks
 as charts, a stationarity screen of the peaks with the dated dam and land-cover changes in
-the basin beside a change point, and the ways on: Bulletin 17C on the Flow Frequency page (in a new window),
-the USGS pages, the basin map. All
+the basin beside a change point, the Bulletin 17C frequency curve on demand, and the ways on:
+the Flow Frequency page (in a new window), the USGS pages, the basin map. All
 data comes from the flowfreq library (:class:`flowfreq.usgs.USGSgage`);
 this module only formats it.
+
+The frequency curve is the Flow Frequency page's own analysis, not a second one: the app
+hands :func:`render` its fit, figure, tables and error display as :class:`CurveHooks`
+(this module cannot import the app, which is a script). :func:`fit_curve` caches the fit.
 
 :func:`load_site`, :func:`load_peaks` and :func:`load_daily` are the seams: cached, and they never raise, so
 the page has one code path for failure. :func:`render` is the page.
@@ -19,7 +23,8 @@ import io
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import altair as alt
 import numpy as np
@@ -158,6 +163,7 @@ def clear_caches() -> None:
     _fetch_site.clear()
     _fetch_peaks.clear()
     _fetch_daily.clear()
+    _cached_fit.clear()
     _fetch_basin.clear()
     _fetch_impervious.clear()
 
@@ -1456,8 +1462,152 @@ def _downloads(site_no: str, daily: Dict[str, Any], peaks: Dict[str, Any]) -> No
         )
 
 
-def render(site_no: str) -> None:
-    """Draw the gage page for one validated site number."""
+@dataclass(frozen=True)
+class CurveHooks:
+    """The Flow Frequency page's analysis, handed to :func:`render` by the app.
+
+    Attributes
+    ----------
+    fit : callable
+        ``fit(site_no, peaks) -> result``: the app's ``run_site_ffa`` with the Flow
+        Frequency page's default settings. Never raises; a failure comes back under
+        ``error`` with an ``error_kind``.
+    figure : callable
+        ``figure(result, site_no, site_name) -> matplotlib.figure.Figure``: the
+        frequency-curve plot the Flow Frequency page draws.
+    tables : callable
+        ``tables(result) -> [(heading, DataFrame)]``: its formatted frequency tables.
+    show_error : callable
+        ``show_error(site_no, result)``: its message for a failed or refused fit.
+    """
+
+    fit: Callable[[str, pd.DataFrame], Dict[str, Any]]
+    figure: Callable[[Dict[str, Any], str, str], Any]
+    tables: Callable[[Dict[str, Any]], List[Tuple[str, pd.DataFrame]]]
+    show_error: Callable[[str, Dict[str, Any]], None]
+
+
+class _Transient(Exception):
+    """A fit that should not be cached; carries the result to show."""
+
+    def __init__(self, result: Dict[str, Any]) -> None:
+        super().__init__(result.get("error"))
+        self.result = result
+
+
+#: Fits kept at once. A fit result holds the fitted model and a few small tables.
+_FIT_ENTRIES = 16
+
+
+@st.cache_data(ttl=CACHE_TTL_S, max_entries=_FIT_ENTRIES, show_spinner=False)
+def _cached_fit(
+    site_no: str, peaks: pd.DataFrame, _fit: Callable[[str, pd.DataFrame], Dict[str, Any]]
+) -> Dict[str, Any]:
+    # Keyed on the site and its peaks; the function (leading underscore) is not hashed.
+    result = _fit(site_no, peaks)
+    # A skew error comes before any EMA runs, so it is cheap to repeat, and the published
+    # skew lookup behind it can fail for a passing outage: never cache one.
+    if result.get("error") and result.get("error_kind") == "skew":
+        raise _Transient(result)
+    return result
+
+
+def fit_curve(site_no: str, peaks: pd.DataFrame, hooks: CurveHooks) -> Dict[str, Any]:
+    """The Flow Frequency page's default Bulletin 17C fit of a site's peaks, cached.
+
+    EMA takes about a second cold, so a site is fitted once per :data:`CACHE_TTL_S` (per
+    distinct peak record) and reruns of the page reuse the fit. Never raises; skew-lookup
+    failures are not cached.
+
+    Parameters
+    ----------
+    site_no : str
+        USGS site number.
+    peaks : pandas.DataFrame
+        :meth:`flowfreq.usgs.USGSgage.download_peak_flow` output.
+    hooks : CurveHooks
+        The app's analysis; ``hooks.fit`` does the fitting.
+
+    Returns
+    -------
+    dict
+        ``hooks.fit``'s result.
+    """
+    try:
+        return _cached_fit(site_no, peaks, hooks.fit)
+    except _Transient as exc:
+        return exc.result
+
+
+#: Session state key: the sites whose curve the user asked for in this session.
+_REQUESTED = "_b17c_sites"
+
+
+def _curve_requested(site_no: str) -> bool:
+    return site_no in st.session_state.get(_REQUESTED, ())
+
+
+def _request_curve(site_no: str) -> None:
+    # A button callback: remember the site, so the curve stays drawn on later reruns.
+    st.session_state[_REQUESTED] = {*st.session_state.get(_REQUESTED, ()), site_no}
+
+
+#: The settings the in-place curve uses, in words (the app's DEFAULT_FIT_SETTINGS).
+_DEFAULTS_TEXT = (
+    "the Flow Frequency page's default settings: published regional skew, NWIS peak codes "
+    "applied, regulated gages refused, the Multiple Grubbs-Beck Test for low outliers, "
+    "the whole record"
+)
+
+
+def curve_section(site_no: str, name: str, peaks: pd.DataFrame, hooks: CurveHooks) -> None:
+    """The Bulletin 17C frequency curve in place: on demand, then kept for the session.
+
+    Before the button is pressed nothing is fitted. After, the Flow Frequency page's plot
+    (fitted curve, 90% confidence limits, the peaks at their plotting positions on an AEP
+    axis) and tables from its default fit, or its message for a fit that failed or was
+    refused.
+    """
+    st.subheader("Bulletin 17C frequency curve")
+    if not _curve_requested(site_no):
+        st.button(
+            "Draw the Bulletin 17C curve",
+            on_click=_request_curve,
+            args=(site_no,),
+            key="draw_b17c",
+            type="primary",
+            help="Fits the annual peaks with EMA here, without leaving the page.",
+        )
+        st.caption(f"Fits Bulletin 17C (EMA) on this page, with {_DEFAULTS_TEXT}.")
+        return
+    with st.spinner("Fitting Bulletin 17C (EMA)..."):
+        result = fit_curve(site_no, peaks, hooks)
+    if result.get("error"):
+        hooks.show_error(site_no, result)
+        return
+    import matplotlib.pyplot as plt
+
+    figure = hooks.figure(result, site_no, name)
+    st.pyplot(figure)
+    plt.close(figure)
+    if not result.get("converged"):
+        st.warning("MOM Fallback (EMA did not converge)")
+    st.caption(
+        f"Fitted with {_DEFAULTS_TEXT}. To change a setting or the years fitted, open it on "
+        "the Flow Frequency page (**Open in Bulletin 17C** below)."
+    )
+    with st.expander("Frequency table"):
+        for heading, table in hooks.tables(result):
+            st.markdown(heading)
+            st.dataframe(table, use_container_width=True)
+
+
+def render(site_no: str, curve: Optional[CurveHooks] = None) -> None:
+    """Draw the gage page for one validated site number.
+
+    ``curve`` is the Flow Frequency page's analysis (:class:`CurveHooks`), for the
+    frequency curve in place; without it the page leaves Bulletin 17C to that page.
+    """
     back_button()
     with st.spinner(f"Downloading USGS {site_no}..."):
         loaded = load_all(site_no)
@@ -1502,16 +1652,17 @@ def render(site_no: str) -> None:
         st.altair_chart(peak_chart(peaks["peaks"], change_year=year, events=events))
         st.caption(
             "Bars are the annual peaks as USGS reports them, coloured by qualification code. "
-            "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Flow Frequency "
-            "page."
+            "Bulletin 17C applies the codes, low-outlier tests and skew."
             + (" Dotted green lines are dated basin changes (hover for each)." if events else "")
         )
         stationarity_section(screen)
         if basin is not None and year is not None:
             basin_events_section(site_no, basin, year)
         _report_downloads(site_no, info["name"], peaks["peaks"], daily, events)
+        if curve is not None:
+            curve_section(site_no, info["name"], peaks["peaks"], curve)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
     with st.expander("Coming to this page"):
-        st.markdown("- The Bulletin 17C frequency curve in place, without leaving the page")
+        st.markdown("- Direct data downloads of the peaks, the daily record and the fitted curve")
