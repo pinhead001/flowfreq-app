@@ -266,7 +266,7 @@ def test_page_plots_the_daily_record(monkeypatch):
     at = _run(monkeypatch)
     assert not at.exception
     assert any("Daily mean flow" in h.value for h in at.subheader)
-    assert len(_charts(at)) == 1  # annual peaks
+    assert len(_charts(at)) == 2  # the raster hydrograph and the annual peaks
     # The daily record, in the resizable-brush component (vega_component).
     assert len(at.get("component_instance")) == 1
 
@@ -779,3 +779,128 @@ def test_page_without_enough_peaks_offers_no_report(monkeypatch):
     gage_ui.report_files.clear()
     labels = [e.proto.label for e in _run(monkeypatch).get("download_button")]
     assert not any(label.startswith("Stationarity") for label in labels)
+
+
+# --- Raster hydrograph ------------------------------------------------------------------
+
+
+def _cells(dates, flows, codes=None):
+    index = pd.DatetimeIndex(pd.to_datetime(dates), name="date")
+    frame = pd.DataFrame({"flow_cfs": flows}, index=index)
+    if codes is not None:
+        frame["qualification_code"] = codes
+    return gage_ui.raster_frame(frame)
+
+
+def test_raster_days_count_from_october_first_on_a_leap_year_calendar():
+    dates = [
+        "1999-10-01", "2000-02-28", "2000-02-29", "2000-03-01", "2000-09-30",
+        "2000-10-01", "2001-02-28", "2001-03-01", "2001-09-30",
+    ]  # fmt: skip
+    cells = _cells(dates, np.arange(1.0, 10.0))
+    assert cells["water_year"].tolist() == [2000] * 5 + [2001] * 4
+    # February 29 is slot 152 every year; a year without one leaves it empty, so March 1
+    # is 153 and September 30 is 366 in both.
+    assert cells["day"].tolist() == [1, 151, 152, 153, 366, 1, 151, 153, 366]
+    assert cells["date"].tolist()[2] == "Feb 29, 2000"
+
+
+def test_raster_leaves_missing_days_out_and_keeps_zero_flows():
+    cells = _cells(["2010-10-01", "2010-10-02", "2010-10-05"], [5.0, np.nan, 0.0])
+    assert cells["day"].tolist() == [1, 5]  # the NaN day and the unpublished ones: no row
+    assert cells["flow_cfs"].tolist() == [5.0, 0.0]
+
+
+def test_raster_frame_sorts_and_marks_provisional_days():
+    cells = _cells(["2021-10-03", "2021-10-01"], [2.0, 1.0], codes=["P:e", "A"])
+    assert cells["day"].tolist() == [1, 3]
+    assert cells["provisional"].tolist() == [False, True]
+    assert cells["note"].tolist() == ["", "provisional, estimated"]
+    assert not _cells(["2021-10-01"], [1.0])["provisional"].any()  # no codes: none
+
+
+def test_provisional_spans_break_at_gaps_and_water_years():
+    dates = pd.date_range("2024-09-28", "2024-10-04", freq="D").delete(5)  # Oct 3 missing
+    codes = ["A", "P", "P", "P", "P", "P"]  # Sep 29 to Oct 4, but for Oct 3
+    spans = gage_ui.provisional_spans(_cells(dates, np.ones(len(dates)), codes))
+    assert spans.to_dict("records") == [
+        {"water_year": 2024, "first": 365, "last": 366},
+        {"water_year": 2025, "first": 1, "last": 2},
+        {"water_year": 2025, "first": 4, "last": 4},
+    ]
+    assert gage_ui.provisional_spans(_cells(dates, np.ones(len(dates)))).empty
+
+
+def _raster(daily):
+    import altair as alt
+
+    with alt.data_transformers.disable_max_rows():
+        return gage_ui.raster_hydrograph_chart(daily).to_dict()
+
+
+def test_raster_colours_by_log_flow_and_draws_zero_flows_apart():
+    spec = _raster(DAILY)  # DAILY has a zero day and provisional days
+    flowing, zero, provisional = spec["layer"]
+    color = flowing["encoding"]["color"]
+    assert color["field"] == "flow_cfs" and color["scale"]["type"] == "log"
+    assert {"filter": "datum.flow_cfs > 0"} in flowing["transform"]
+    assert {"filter": "datum.flow_cfs <= 0"} in zero["transform"]
+    assert zero["mark"]["color"] == gage_ui.ZERO_FLOW_COLOR
+    assert provisional["mark"]["stroke"] == gage_ui.PROVISIONAL_COLOR
+    assert provisional["mark"]["fill"] is None
+    for layer in spec["layer"]:
+        assert layer["encoding"]["y"]["field"] == "water_year"
+        assert layer["encoding"]["x"]["field"] == "start"
+
+
+def test_raster_gives_every_water_year_a_row_even_an_empty_one():
+    days = pd.date_range("1990-10-01", "1995-09-30", freq="D", name="date")
+    daily = pd.DataFrame({"flow_cfs": 10.0}, index=days)
+    daily = daily[(daily.index < "1992-10-01") | (daily.index >= "1993-10-01")]  # no WY 1993
+    spec = _raster(daily)
+    for layer in spec["layer"]:
+        assert layer["encoding"]["y"]["scale"]["domain"] == [1991, 1992, 1993, 1994, 1995]
+    assert len(spec["layer"]) == 2  # no codes, no provisional outline
+
+
+def test_a_provisional_run_across_the_empty_february_29_stays_one_run():
+    dates = pd.date_range("2023-02-27", "2023-03-02", freq="D")
+    spans = gage_ui.provisional_spans(_cells(dates, np.ones(4), ["P"] * 4))
+    assert spans.to_dict("records") == [{"water_year": 2023, "first": 150, "last": 154}]
+
+
+def test_raster_of_a_century_is_quick_and_a_sensible_size():
+    import time
+
+    days = pd.date_range("1925-10-01", "2025-09-30", freq="D", name="date")
+    daily = pd.DataFrame(
+        {"flow_cfs": np.random.default_rng(5).lognormal(5.0, 1.0, len(days))}, index=days
+    )
+    start = time.perf_counter()
+    spec = _raster(daily)
+    assert time.perf_counter() - start < 5.0  # about half a second on a laptop
+    assert spec["height"] == 400
+    axis_years = spec["layer"][0]["encoding"]["y"]["axis"]["values"]
+    assert axis_years[0] == 1930 and all(y % 10 == 0 for y in axis_years)
+
+
+def test_page_shows_the_raster_hydrograph(monkeypatch):
+    at = _run(monkeypatch, peaks=LONG_PEAKS, daily=LONG_DAILY)
+    assert not at.exception
+    assert any(c.value.startswith("Raster hydrograph:") for c in at.caption)
+    titles = [getattr(c.proto, "spec", "") for c in _charts(at)]
+    assert any('"Raster hydrograph"' in t for t in titles)
+
+
+def test_page_without_daily_values_has_no_raster(monkeypatch):
+    at = _run(monkeypatch, daily=None)
+    assert not any(c.value.startswith("Raster hydrograph") for c in at.caption)
+
+
+def test_page_draws_the_raster_of_a_long_record(monkeypatch):
+    # Past Altair's 5,000-row limit: the page must not trip MaxRowsError.
+    days = pd.date_range("1975-10-01", "2025-09-30", freq="D", name="date")
+    daily = pd.DataFrame({"flow_cfs": np.linspace(0.0, 500.0, len(days))}, index=days)
+    at = _run(monkeypatch, peaks=LONG_PEAKS, daily=daily)
+    assert not at.exception
+    assert any(c.value.startswith("Raster hydrograph:") for c in at.caption)

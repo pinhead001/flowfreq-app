@@ -2,7 +2,8 @@
 
 ``?page=gage&site=NNNNNNNN`` lands here. The page shows the site (name, drainage area,
 state, HUC, location), its periods of record for daily flow and annual peaks, the daily
-record (zoomable to a period of interest) and the annual peaks as charts, a stationarity
+record (zoomable to a period of interest, and as a raster hydrograph) and the annual peaks
+as charts, a stationarity
 screen of the peaks, and the ways on: Bulletin 17C on the Flow Frequency page (in a new window),
 the USGS pages, the basin map. All
 data comes from the flowfreq library (:class:`flowfreq.usgs.USGSgage`);
@@ -685,6 +686,201 @@ def _regime_section(daily: Dict[str, Any]) -> None:
     )
 
 
+#: Day-of-water-year slots of the raster hydrograph: a leap water year's 366 days.
+RASTER_DAYS = 366
+#: The slot of February 29. A water year without one leaves it empty, so every calendar
+#: date keeps one column across the record (March 1 is always slot 153).
+_FEB29_SLOT = 152
+
+
+def _is_leap(year: np.ndarray) -> np.ndarray:
+    return (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
+
+
+def raster_frame(daily: pd.DataFrame) -> pd.DataFrame:
+    """The daily record as raster hydrograph cells: one row per day with a value.
+
+    Water years run October 1 to September 30 and are named for the year they end in.
+    Days are numbered on a fixed leap-year calendar, October 1 = 1 to September 30 = 366,
+    with February 29 at 152: a water year without one leaves that slot empty rather than
+    shifting March to September back a day, so a calendar date is in the same column in
+    every year. Days without a value (or with a NaN flow) have no row; zero flows keep
+    theirs.
+
+    This is a reshaping of the record, not a statistic, and could move to
+    :class:`flowfreq.hydrograph.Hydrograph` beside ``day_of_water_year``.
+
+    Parameters
+    ----------
+    daily : pandas.DataFrame
+        ``flow_cfs`` indexed by ``date``, optionally ``qualification_code``
+        (:func:`flowfreq.waterdata.download_daily`).
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``water_year``, ``day`` (1-366), ``date`` (``"Mar 1, 1929"``), ``flow_cfs``,
+        ``provisional`` (bool) and ``note`` (:func:`status_note`), in date order.
+    """
+    flows = daily["flow_cfs"].astype("float64")
+    keep = flows.notna().to_numpy()
+    dates = pd.DatetimeIndex(daily.index)[keep].normalize()
+    flows = flows[keep]
+    order = np.argsort(dates.to_numpy(), kind="stable")
+    dates, values = dates[order], flows.to_numpy()[order]
+    water_year = dates.year.to_numpy() + (dates.month.to_numpy() >= 10)
+    starts = pd.to_datetime({"year": water_year - 1, "month": 10, "day": 1})
+    day = (dates.to_numpy() - starts.to_numpy()) // np.timedelta64(1, "D") + 1
+    day = day + ((~_is_leap(water_year)) & (day >= _FEB29_SLOT))
+    frame = pd.DataFrame(
+        {
+            "water_year": water_year.astype(int),
+            "day": day.astype(int),
+            "date": _date_labels(dates),
+            "flow_cfs": values,
+        }
+    )
+    if "qualification_code" in daily:
+        codes = daily["qualification_code"][keep].iloc[order].astype("string")
+        frame["provisional"] = codes.str.startswith("P").fillna(False).astype(bool).to_numpy()
+        notes = {code: status_note(code) for code in codes.dropna().unique()}
+        frame["note"] = codes.map(notes).fillna("").to_numpy()
+    else:
+        frame["provisional"] = False
+        frame["note"] = ""
+    return frame
+
+
+def _date_labels(dates: pd.DatetimeIndex) -> np.ndarray:
+    # "Mar 1, 1929", without strftime's platform-specific no-pad flag.
+    return (dates.strftime("%b ") + dates.day.astype(str) + dates.strftime(", %Y")).to_numpy()
+
+
+def provisional_spans(cells: pd.DataFrame) -> pd.DataFrame:
+    """Runs of consecutive provisional days within each water year of :func:`raster_frame`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``water_year``, ``first`` and ``last`` (day slots, inclusive), one row per run.
+    """
+    prov = cells[cells["provisional"]]
+    if prov.empty:
+        return pd.DataFrame({"water_year": [], "first": [], "last": []}, dtype=int)
+    # A new run at a new water year or after any day missing or not provisional. Days are
+    # counted without the empty February 29 slot, so a run across it stays one run.
+    position = pd.Series(np.arange(len(cells)), index=cells.index)[prov.index]
+    year = prov["water_year"].to_numpy()
+    counted = prov["day"] - ((~_is_leap(year)) & (prov["day"].to_numpy() > _FEB29_SLOT))
+    breaks = (position.diff() != 1) | (counted.diff() != 1) | (prov["water_year"].diff() != 0)
+    run = breaks.cumsum()
+    spans = prov.groupby(run.to_numpy()).agg(
+        water_year=("water_year", "first"), first=("day", "min"), last=("day", "max")
+    )
+    return spans.reset_index(drop=True)
+
+
+#: Zero-flow days, which a log colour scale cannot place: drawn in their own colour.
+ZERO_FLOW_COLOR = "#a6611a"
+#: Provisional days are outlined in the daily chart's provisional orange.
+PROVISIONAL_COLOR = "#ff7f0e"
+#: Viridis, reversed and trimmed of its darkest end: dry days yellow, wet days blue to
+#: purple, every cell distinct from both a light and a dark page (gaps show the page).
+_RASTER_SCHEME = {"name": "viridis", "extent": [1.0, 0.12]}
+
+
+def _year_ticks(years: list[int]) -> list[int]:
+    # Label every year in a short record, every fifth or tenth in a longer one.
+    step = 1 if len(years) <= 12 else 5 if len(years) <= 40 else 10
+    return [y for y in years if y % step == 0] or years[:1]
+
+
+def raster_hydrograph_chart(daily: pd.DataFrame) -> alt.LayerChart:
+    """The raster hydrograph: every day of the record as a cell, water years down the
+    side (earliest at the top) and the day of the water year across, coloured by daily
+    mean flow on a log scale.
+
+    Days with no value are left blank, so gaps in the record show as the page behind it.
+    Zero flows, which a log scale cannot place, are drawn in :data:`ZERO_FLOW_COLOR`.
+    Provisional days are outlined in :data:`PROVISIONAL_COLOR`. February 29 has a column
+    of its own (:func:`raster_frame`), empty in other years.
+    """
+    cells = raster_frame(daily)
+    years = list(range(int(cells["water_year"].min()), int(cells["water_year"].max()) + 1))
+    # Every water year in range gets a row, even one with no data at all.
+    y = alt.Y(
+        "water_year:O",
+        title="Water year",
+        scale=alt.Scale(domain=years, paddingInner=0, paddingOuter=0),
+        axis=alt.Axis(values=_year_ticks(years), labelOverlap=True),
+    )
+    # The day axis as dates of a leap water year (WY 2020), as the summary hydrograph's.
+    # Built in the browser in local time; JavaScript rolls October 32 into November 1.
+    origin = f"{_DOWY_ORIGIN.year}, {_DOWY_ORIGIN.month - 1}"
+    x = alt.X(
+        "start:T",
+        title="Day of the water year (October to September)",
+        axis=alt.Axis(format="%b", tickCount="month"),
+        scale=alt.Scale(
+            domain=[_datetime(_DOWY_ORIGIN), _datetime(_DOWY_ORIGIN + pd.DateOffset(years=1))]
+        ),
+    )
+    tooltip = [
+        alt.Tooltip("date:N", title="Date"),
+        alt.Tooltip("flow_cfs:Q", title="Daily mean flow (cfs)", format=",.4~r"),
+        alt.Tooltip("note:N", title="Status"),
+    ]
+    base = (
+        alt.Chart(cells)
+        .transform_calculate(
+            start=f"datetime({origin}, datum.day)", end=f"datetime({origin}, datum.day + 1)"
+        )
+        .encode(x=x, x2="end:T", y=y, tooltip=tooltip)
+    )
+    flowing = (
+        base.transform_filter("datum.flow_cfs > 0")
+        .mark_rect()
+        .encode(
+            color=alt.Color(
+                "flow_cfs:Q",
+                title="Daily mean flow (cfs)",
+                scale=alt.Scale(type="log", scheme=_RASTER_SCHEME),
+                legend=alt.Legend(orient="right", format=",.2~r", gradientLength=200),
+            )
+        )
+    )
+    zero = base.transform_filter("datum.flow_cfs <= 0").mark_rect(color=ZERO_FLOW_COLOR)
+    layers = [flowing, zero]
+    spans = provisional_spans(cells)
+    if not spans.empty:
+        layers.append(
+            alt.Chart(spans)
+            .transform_calculate(
+                start=f"datetime({origin}, datum.first)",
+                end=f"datetime({origin}, datum.last + 1)",
+            )
+            .mark_rect(fill=None, stroke=PROVISIONAL_COLOR, strokeWidth=1.5, tooltip=False)
+            .encode(x=x, x2="end:T", y=y)
+        )
+    # About four pixels a year, within reason: a century is a 400-pixel chart.
+    height = int(min(520, max(160, 4 * len(years))))
+    return alt.layer(*layers).properties(height=height, title="Raster hydrograph")
+
+
+def _raster_section(daily: Dict[str, Any]) -> None:
+    frame = daily.get("daily")
+    if frame is None or frame.empty or not frame["flow_cfs"].notna().any():
+        return
+    st.altair_chart(raster_hydrograph_chart(frame), use_container_width=True)
+    st.caption(
+        "Raster hydrograph: each row is a water year (October to September), each cell a "
+        "day, coloured by daily mean flow on a log scale, yellow dry to purple wet. Blank "
+        "cells are days with no published value; brown cells are days of zero flow; days "
+        "outlined in orange are provisional. February 29 has its own column, blank in "
+        "other years. Hover for a day's flow."
+    )
+
+
 def daily_csv(daily: pd.DataFrame) -> str:
     """The daily values as CSV: ``date,flow_cfs[,qualification_code]``, one row per
     published day."""
@@ -1005,6 +1201,7 @@ def render(site_no: str) -> None:
     st.table(_record_frame(info, summary))
     _daily_section(daily, peaks.get("peaks"))
     _regime_section(daily)
+    _raster_section(daily)
     if "error" in peaks:
         st.warning(peaks["error"])
     else:
@@ -1023,7 +1220,6 @@ def render(site_no: str) -> None:
     _downloads(site_no, daily, peaks)
     with st.expander("Coming to this page"):
         st.markdown(
-            "- Raster hydrograph (day of year by year)\n"
             "- The Bulletin 17C frequency curve in place, without leaving the page\n"
             "- Dams and land-cover change in the basin beside a change point"
         )
