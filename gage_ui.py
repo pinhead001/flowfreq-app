@@ -3,8 +3,8 @@
 ``?page=gage&site=NNNNNNNN`` lands here. The page shows the site (name, drainage area,
 state, HUC, location), its periods of record for daily flow and annual peaks, the daily
 record (zoomable to a period of interest, and as a raster hydrograph) and the annual peaks
-as charts, a stationarity
-screen of the peaks, and the ways on: Bulletin 17C on the Flow Frequency page (in a new window),
+as charts, a stationarity screen of the peaks with the dated dam and land-cover changes in
+the basin beside a change point, and the ways on: Bulletin 17C on the Flow Frequency page (in a new window),
 the USGS pages, the basin map. All
 data comes from the flowfreq library (:class:`flowfreq.usgs.USGSgage`);
 this module only formats it.
@@ -19,24 +19,29 @@ import io
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import altair as alt
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 from flowfreq.hydrograph import Hydrograph
 from flowfreq.regime import flow_duration_curve
+from flowfreq.regulation import NLCD_IMPERVIOUS_CODES, impervious_series, load_nid
 from flowfreq.stationarity import (
     POT_LOW_QUANTILE,
+    basin_change_events,
     pot_counts,
     stationarity_report,
     stationarity_screen,
 )
+from flowfreq.streamstats import delineate_and_get_characteristics
 from flowfreq.usgs import USGSgage
 from flowfreq.waterdata import download_daily
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
+from ungaged_ui import network_message, streamstats_failure
 from vega_component import vega_chart
 
 logger = logging.getLogger(__name__)
@@ -153,6 +158,8 @@ def clear_caches() -> None:
     _fetch_site.clear()
     _fetch_peaks.clear()
     _fetch_daily.clear()
+    _fetch_basin.clear()
+    _fetch_impervious.clear()
 
 
 def load_site(site_no: str) -> Dict[str, Any]:
@@ -269,10 +276,17 @@ def _record_frame(info: Dict[str, Any], summary: Optional[Dict[str, Any]]) -> pd
     return pd.DataFrame(rows).set_index("Record")
 
 
-def peak_chart(peaks: pd.DataFrame, change_year: Optional[int] = None) -> alt.Chart:
+def peak_chart(
+    peaks: pd.DataFrame,
+    change_year: Optional[int] = None,
+    events: Sequence[Tuple[str, int]] = (),
+) -> alt.Chart:
     """Annual peaks as bars on a numeric water-year axis, so gaps in the record show.
 
     A ``change_year`` (from :func:`change_year`) draws a dashed line there, labelled.
+    ``events`` (``(label, year)``, from :func:`load_basin_events`) draw dotted green
+    lines, labelled in their tooltips; those outside the record's years are left off so
+    they do not stretch the axis.
     """
     data = peaks.dropna(subset=["peak_flow_cfs"]).assign(
         peak_date=lambda d: pd.to_datetime(d["peak_date"]).dt.strftime("%Y-%m-%d").fillna(""),
@@ -300,14 +314,33 @@ def peak_chart(peaks: pd.DataFrame, change_year: Optional[int] = None) -> alt.Ch
         )
         .properties(height=260)
     )
-    if change_year is None:
-        return bars
-    marker = alt.Chart(pd.DataFrame({"x": [0]}))
-    rule = marker.mark_rule(color="#444", strokeDash=[6, 4]).encode(x=alt.datum(change_year))
-    label = marker.mark_text(align="left", dx=4, y=8, baseline="top", color="#444").encode(
-        x=alt.datum(change_year), text=alt.value(f"Change point {change_year}")
-    )
-    return alt.layer(bars, rule, label)
+    layers: List[Any] = [bars]
+    first, last = data["water_year"].min(), data["water_year"].max()
+    shown = [(str(label), int(year)) for label, year in events if first <= year <= last]
+    if shown:
+        frame = pd.DataFrame(shown, columns=["event", "year"])
+        layers.append(
+            alt.Chart(frame)
+            .mark_rule(color=EVENT_COLOUR, strokeDash=[2, 3], strokeWidth=2)
+            .encode(
+                x=alt.X("year:Q"),
+                tooltip=[
+                    alt.Tooltip("year:Q", title="Year", format="d"),
+                    alt.Tooltip("event:N", title="Basin change"),
+                ],
+            )
+        )
+    if change_year is not None:
+        marker = alt.Chart(pd.DataFrame({"x": [0]}))
+        layers.append(
+            marker.mark_rule(color="#444", strokeDash=[6, 4]).encode(x=alt.datum(change_year))
+        )
+        layers.append(
+            marker.mark_text(align="left", dx=4, y=8, baseline="top", color="#444").encode(
+                x=alt.datum(change_year), text=alt.value(f"Change point {change_year}")
+            )
+        )
+    return bars if len(layers) == 1 else alt.layer(*layers)
 
 
 #: Quick periods for the daily chart (:func:`period_window`).
@@ -904,6 +937,9 @@ PEAK_KINDS = {
     "Other code": "#7f7f7f",
 }
 
+#: Colour of the basin-change lines (dams, impervious cover) on the peak chart.
+EVENT_COLOUR = "#2ca02c"
+
 
 def peak_kind(codes: str) -> str:
     """The chart category for a peak's comma-separated qualification codes."""
@@ -924,7 +960,7 @@ def peak_kind(codes: str) -> str:
 SCREEN_ALPHA = 0.05
 
 
-def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
+def screen_peaks(peaks: pd.DataFrame, events: Sequence[Tuple[str, int]] = ()) -> Dict[str, Any]:
     """The library's stationarity screen of an annual peak record; never raises.
 
     The same input ``run_ffa`` screens on the Flow Frequency page: every peak with its
@@ -935,6 +971,9 @@ def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
     ----------
     peaks : pandas.DataFrame
         :meth:`flowfreq.usgs.USGSgage.download_peak_flow` output.
+    events : sequence of (str, int), optional
+        Dated basin changes (:func:`load_basin_events`), which the change-point flag
+        then names as candidate causes when they fall near it.
 
     Returns
     -------
@@ -944,7 +983,9 @@ def screen_peaks(peaks: pd.DataFrame) -> Dict[str, Any]:
     """
     values, codes, log = _peak_series(peaks)
     try:
-        return stationarity_screen(values, log=log, alpha=SCREEN_ALPHA, peak_codes=codes)
+        return stationarity_screen(
+            values, log=log, alpha=SCREEN_ALPHA, peak_codes=codes, events=list(events)
+        )
     except ValueError as exc:
         logger.info("stationarity screen not run for the gage page: %s", exc)
         return {"error": str(exc)}
@@ -997,7 +1038,11 @@ def event_counts(daily: Optional[pd.DataFrame]) -> Any:
 
 @st.cache_data(ttl=CACHE_TTL_S, max_entries=16, show_spinner=False)
 def report_files(
-    site_no: str, name: str, peaks: pd.DataFrame, daily: Optional[pd.DataFrame]
+    site_no: str,
+    name: str,
+    peaks: pd.DataFrame,
+    daily: Optional[pd.DataFrame],
+    events: Tuple[Tuple[str, int], ...] = (),
 ) -> Dict[str, Any]:
     """The library's one-page stationarity report, as files to download.
 
@@ -1009,6 +1054,8 @@ def report_files(
         :meth:`flowfreq.usgs.USGSgage.download_peak_flow` output.
     daily : pandas.DataFrame, optional
         The daily record, for the event-count trend (:func:`event_counts`).
+    events : tuple of (str, int), optional
+        Dated basin changes (:func:`load_basin_events`), for the change-point attribution.
 
     Returns
     -------
@@ -1026,6 +1073,7 @@ def report_files(
             log=log,
             alpha=SCREEN_ALPHA,
             peak_codes=codes,
+            events=list(events),
             pot=event_counts(daily),
             title=title,
         )
@@ -1037,9 +1085,15 @@ def report_files(
     return {"markdown": report.markdown, "png": buffer.getvalue()}
 
 
-def _report_downloads(site_no: str, name: str, peaks: pd.DataFrame, daily: Any) -> None:
+def _report_downloads(
+    site_no: str,
+    name: str,
+    peaks: pd.DataFrame,
+    daily: Any,
+    events: Sequence[Tuple[str, int]] = (),
+) -> None:
     frame = daily.get("daily") if isinstance(daily, dict) else None
-    files = report_files(site_no, name, peaks, frame)
+    files = report_files(site_no, name, peaks, frame, tuple((str(a), int(b)) for a, b in events))
     if "error" in files:
         return
     cols = st.columns(3)
@@ -1079,6 +1133,238 @@ def stationarity_section(screen: Dict[str, Any]) -> None:
         "Trend and change-point tests from flowfreq, for information: the screen does not "
         "change the Bulletin 17C fit, which assumes a stationary record."
     )
+
+
+# --- Basin changes beside a change point (NID dams, NLCD impervious cover) -----------
+
+#: The gage's basin from the USGS Network-Linked Data Index: the NHDPlus catchments
+#: upstream of the site, as a GeoJSON FeatureCollection of one feature. Not StreamStats,
+#: so it needs no delineation and works wherever NLDI indexes the gage.
+NLDI_BASIN_URL = "https://api.water.usgs.gov/nldi/linked-data/nwissite/USGS-{site}/basin"
+
+#: Years either side of a change point within which a basin change is a candidate cause
+#: (:func:`flowfreq.stationarity.attribute_change_point`'s default ``window``).
+ATTRIBUTION_WINDOW = 5
+
+#: Session-state keys: a site's impervious-cover answers, and a site whose impervious
+#: cover the user has asked for (set by the button's callback, read on the rerun).
+IMPERVIOUS_KEY = "gage_impervious"
+IMPERVIOUS_REQUEST_KEY = "gage_impervious_request"
+
+
+@st.cache_data(ttl=CACHE_TTL_S, max_entries=32, show_spinner=False)
+def _fetch_basin(site_no: str) -> Dict[str, Any]:
+    response = requests.get(NLDI_BASIN_URL.format(site=site_no), params={"f": "json"}, timeout=60)
+    response.raise_for_status()
+    features = response.json().get("features") or []
+    geometry = (features[0] or {}).get("geometry") if features else None
+    if not geometry or geometry.get("type") not in ("Polygon", "MultiPolygon"):
+        raise ValueError("NLDI returned no basin polygon for this gage")
+    return dict(geometry)
+
+
+@st.cache_resource(show_spinner=False)
+def _nid() -> Any:
+    # The national inventory: an 82 MB download the first time on a machine, then a
+    # 1.3 MB cached extract (flowfreq.regulation.load_nid). One copy for the process.
+    return load_nid()
+
+
+@st.cache_data(ttl=CACHE_TTL_S, max_entries=16, show_spinner=False)
+def _fetch_impervious(region: str, lat: float, lon: float) -> Dict[int, float]:
+    watershed = delineate_and_get_characteristics(
+        region, lat, lon, characteristic_codes=["DRNAREA", *NLCD_IMPERVIOUS_CODES]
+    )
+    return impervious_series(watershed)
+
+
+def load_basin_events(
+    site_no: str,
+    *,
+    impervious: Optional[Dict[int, float]] = None,
+    region: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Dated dam and land-cover changes in the gage's basin. Never raises.
+
+    Dams come from the National Inventory of Dams inside the NLDI basin
+    (:data:`NLDI_BASIN_URL`); the year impervious cover crossed the urban threshold
+    comes from ``impervious``, when the caller has it. Both go through
+    :func:`flowfreq.stationarity.basin_change_events`.
+
+    Parameters
+    ----------
+    site_no : str
+    impervious : dict of int to float, optional
+        NLCD year to percent impervious (:func:`load_impervious`).
+    region : str, optional
+        StreamStats region of ``impervious``; a region where the library does not trust
+        the impervious characteristic has it skipped, with a note.
+
+    Returns
+    -------
+    dict
+        ``events`` (``(label, year)``, ready for ``events=``), ``notes`` (what could not
+        be dated or checked), ``n_dams`` (dams in the basin, or None when dams were not
+        checked) and ``dams_checked``.
+    """
+    notes: List[str] = []
+    geometry: Optional[Dict[str, Any]] = None
+    nid: Any = None
+    try:
+        geometry = _fetch_basin(site_no)
+    except requests.RequestException as exc:
+        notes.append(
+            f"Dams not checked: the basin outline (USGS NLDI) is unavailable ({network_message(exc)})."
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing basin is a note, never a traceback
+        logger.warning("NLDI basin failed for %s: %s", site_no, exc)
+        notes.append(f"Dams not checked: {exc}.")
+    if geometry is not None:
+        try:
+            nid = _nid()
+        except Exception as exc:  # noqa: BLE001 - NIDUnavailableError, or anything else
+            logger.warning("NID unavailable: %s", exc)
+            notes.append("Dams not checked: the National Inventory of Dams could not be loaded.")
+            geometry = None
+    try:
+        found = basin_change_events(
+            geometry=geometry, nid=nid, impervious=impervious or None, region=region
+        )
+    except Exception as exc:  # noqa: BLE001 - shown as a note, never a traceback
+        logger.exception("basin change events failed for %s", site_no)
+        notes.append(f"Basin changes could not be worked out: {type(exc).__name__}: {exc}.")
+        found = {"events": [], "notes": [], "n_dams": None}
+    return {
+        "events": [(str(label), int(year)) for label, year in found["events"]],
+        "notes": notes + [f"{n[0].upper()}{n[1:]}." for n in found["notes"]],
+        "n_dams": found["n_dams"],
+        "dams_checked": geometry is not None,
+    }
+
+
+def load_impervious(region: str, lat: float, lon: float) -> Dict[str, Any]:
+    """NLCD percent impervious by epoch for the basin above a point. Never raises.
+
+    The one StreamStats request on the gage page, made only when the user asks for it:
+    a delineation at the gage with the :data:`flowfreq.regulation.NLCD_IMPERVIOUS_CODES`
+    characteristics (:func:`flowfreq.regulation.impervious_series`).
+
+    Returns
+    -------
+    dict
+        ``{"series": {year: percent}}`` (empty where the region computes none), or
+        ``{"error": str}``.
+    """
+    try:
+        return {"series": dict(_fetch_impervious(region, float(lat), float(lon)))}
+    except requests.RequestException as exc:
+        return {"error": streamstats_failure(exc)}
+    except Exception as exc:  # noqa: BLE001 - ValueError (unsnappable, regulated, region) etc.
+        logger.warning("impervious cover failed at %s, %s (%s): %s", lat, lon, region, exc)
+        return {"error": str(exc) or type(exc).__name__}
+
+
+def _request_impervious(site_no: str) -> None:
+    # Button callback: ask for the StreamStats request on the rerun, under a spinner.
+    st.session_state[IMPERVIOUS_REQUEST_KEY] = site_no
+
+
+def _impervious_for(site_no: str, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    # This site's impervious answer, running the request the user just asked for.
+    answers = st.session_state.setdefault(IMPERVIOUS_KEY, {})
+    if st.session_state.get(IMPERVIOUS_REQUEST_KEY) == site_no:
+        del st.session_state[IMPERVIOUS_REQUEST_KEY]
+        with st.spinner("Asking StreamStats for the basin's impervious cover..."):
+            answers[site_no] = load_impervious(
+                state_abbrev(info.get("state")), info["lat"], info["lon"]
+            )
+    return answers.get(site_no)
+
+
+def page_basin_events(site_no: str, info: Dict[str, Any]) -> Dict[str, Any]:
+    """:func:`load_basin_events` for the page: with impervious cover once asked for.
+
+    Returns
+    -------
+    dict
+        :func:`load_basin_events`'s answer, plus ``impervious`` (:func:`load_impervious`'s
+        answer, or None when not asked for) and ``can_ask`` (whether the page has the
+        location and state a StreamStats request needs).
+    """
+    region = state_abbrev(info.get("state")) or None
+    can_ask = bool(region) and info.get("lat") is not None and info.get("lon") is not None
+    answer = _impervious_for(site_no, info) if can_ask else None
+    series = (answer or {}).get("series")
+    with st.spinner(
+        "Looking for dams in the basin (the first look on a server downloads the "
+        "National Inventory of Dams)..."
+    ):
+        basin = load_basin_events(site_no, impervious=series, region=region)
+    return {**basin, "impervious": answer, "can_ask": can_ask}
+
+
+def basin_events_frame(events: Sequence[Tuple[str, int]], change_year: int) -> pd.DataFrame:
+    """Basin changes as a table: by year, with each one's distance from the change point."""
+    rows = [
+        {
+            "Year": int(year),
+            "Basin change": f"{label[0].upper()}{label[1:]}",
+            "From change point": f"{int(year) - change_year:+d} yr",
+            "Candidate cause": (
+                "yes" if abs(int(year) - change_year) <= ATTRIBUTION_WINDOW else ""
+            ),
+        }
+        for label, year in sorted(events, key=lambda e: (e[1], e[0]))
+    ]
+    columns = ["Year", "Basin change", "From change point", "Candidate cause"]
+    return pd.DataFrame(rows, columns=columns)
+
+
+def basin_events_section(site_no: str, basin: Dict[str, Any], change_year: int) -> None:
+    """Dated dams and land-cover change in the basin, beside the change point."""
+    st.markdown(f"**Basin changes beside the {change_year} change point**")
+    if basin["events"]:
+        st.dataframe(
+            basin_events_frame(basin["events"], change_year),
+            hide_index=True,
+            use_container_width=True,
+        )
+    elif basin["dams_checked"]:
+        dams = basin["n_dams"] or 0
+        st.caption(
+            "No dated basin change: "
+            + ("no NID dams in the basin." if dams == 0 else f"{dams} NID dams, none dated.")
+        )
+    lines = list(basin["notes"])
+    answer = basin.get("impervious")
+    if answer is None:
+        lines.append(
+            "Impervious cover (NLCD) not checked: it comes from StreamStats basin "
+            "characteristics, a separate request of 10–30 s."
+            if basin["can_ask"]
+            else "Impervious cover (NLCD) not checked: the gage's location or state is unknown."
+        )
+    elif "error" in answer:
+        lines.append(f"Impervious cover could not be checked: {answer['error']}")
+    elif not answer["series"]:
+        lines.append("StreamStats reports no NLCD impervious cover for this basin's region.")
+    else:
+        series = ", ".join(f"{y} {p:.1f}%" for y, p in answer["series"].items())
+        lines.append(f"Impervious cover (StreamStats, NLCD): {series}.")
+    lines.append(
+        "Dams: the National Inventory of Dams (USACE) inside the NLDI basin (NHDPlus "
+        "catchments upstream of the gage), each dam holding at least 10% of the basin's NID "
+        f"storage at its completion year. Within {ATTRIBUTION_WINDOW} years of the change "
+        "point a change is a candidate cause, not a proven one."
+    )
+    st.caption("\n".join(f"- {line}" for line in lines))
+    if basin["can_ask"] and (answer is None or "error" in answer):
+        st.button(
+            "Check impervious cover (StreamStats)" if answer is None else "Try StreamStats again",
+            key="gage_impervious_button",
+            on_click=_request_impervious,
+            args=(site_no,),
+        )
 
 
 def back_button() -> None:
@@ -1207,19 +1493,25 @@ def render(site_no: str) -> None:
     else:
         st.subheader("Annual peak flows")
         screen = screen_peaks(peaks["peaks"])
-        st.altair_chart(peak_chart(peaks["peaks"], change_year=change_year(screen)))
+        year = change_year(screen)
+        # Basin changes only beside a change point: the dam lookup is a download.
+        basin = page_basin_events(site_no, info) if year is not None else None
+        events = basin["events"] if basin else []
+        if events:  # again, so the change-point flag names the basin changes near it
+            screen = screen_peaks(peaks["peaks"], events=events)
+        st.altair_chart(peak_chart(peaks["peaks"], change_year=year, events=events))
         st.caption(
             "Bars are the annual peaks as USGS reports them, coloured by qualification code. "
             "Bulletin 17C applies the codes, low-outlier tests and skew; it runs on the Flow Frequency "
             "page."
+            + (" Dotted green lines are dated basin changes (hover for each)." if events else "")
         )
         stationarity_section(screen)
-        _report_downloads(site_no, info["name"], peaks["peaks"], daily)
+        if basin is not None and year is not None:
+            basin_events_section(site_no, basin, year)
+        _report_downloads(site_no, info["name"], peaks["peaks"], daily, events)
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
     with st.expander("Coming to this page"):
-        st.markdown(
-            "- The Bulletin 17C frequency curve in place, without leaving the page\n"
-            "- Dams and land-cover change in the basin beside a change point"
-        )
+        st.markdown("- The Bulletin 17C frequency curve in place, without leaving the page")

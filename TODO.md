@@ -32,8 +32,10 @@ Then, roughly in order of value:
    the radio and the URL agree; Back itself still does not rerun.
 4. **`use_container_width` deprecation:** move to `width="stretch"` and raise the Streamlit
    floor from 1.40 (every chart in the app).
-5. **Stationarity follow-ups:** the flags in the ZIP export and the multi-gage comparison;
-   NID/NLCD basin events for attribution (needs the delineated basin).
+5. **Stationarity follow-ups:** the flags in the ZIP export and the multi-gage comparison.
+   NID/NLCD basin events are on the gage page (NLDI basin for the dams; impervious cover on
+   request from StreamStats); the StreamStats impervious path is untested live, and the
+   Flow Frequency page's screen does not yet use the events.
 6. **Library questions for flowfreq:** 02087500's 1968 change point is reported with no
    candidate cause although 45 of its peaks carry code 6 (`attribute_change_point`'s 5-year
    window?); `USGSgage.peak_summary()` to cut the gage page's repeated site lookup.
