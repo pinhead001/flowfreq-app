@@ -713,7 +713,9 @@ def test_summary_hydrograph_draws_bands_median_and_mean_on_a_log_axis():
     assert {"p10", "p25", "p50", "mean"} <= fields
     assert _scale_types(spec) == {"log"}
     (rows,) = spec["datasets"].values()
-    assert len(rows) == 365 and rows[0]["date"].startswith("2019-10-01")
+    # flowfreq 0.26: a leap-year calendar, so Feb 29 has its own day and Sep 30 is day 366.
+    assert len(rows) == 366 and rows[0]["date"].startswith("2019-10-01")
+    assert rows[-1]["date"].startswith("2020-09-30")
 
 
 def test_summary_hydrograph_goes_linear_with_zero_flows():

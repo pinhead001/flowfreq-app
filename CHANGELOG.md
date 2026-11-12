@@ -157,6 +157,18 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.26.0
+
+The pin moves from v0.25.0 to v0.26.0. Existing calls still work, but an estimate can change. What it adds for the app:
+
+- **The characteristics form** (app #45) switches on: Florida, Michigan and Nebraska, and any basin StreamStats can't
+  delineate, can be estimated from characteristics the user enters.
+- **Summary hydrograph dates** are right from March on: the library's day of the water year now has 366 days, with
+  February 29 its own.
+- **South Dakota, Wyoming and Kentucky** basins spanning regions are averaged in flow, as their reports do; **New
+  Hampshire and New York** use their drainage-area-only sets where they apply; **Illinois** urban intervals use the
+  report's degrees of freedom.
+
 ### flowfreq v0.25.0
 
 The pin moves from v0.24.0 to v0.25.0. Existing calls still work, but an estimate or a refusal can change. What it adds
