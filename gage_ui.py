@@ -46,6 +46,7 @@ from flowfreq.usgs import USGSgage
 from flowfreq.waterdata import download_daily
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
+import app_nav
 from ungaged_ui import network_message, streamstats_failure
 from vega_component import vega_chart
 
@@ -1375,15 +1376,8 @@ def basin_events_section(site_no: str, basin: Dict[str, Any], change_year: int) 
 
 def back_button() -> None:
     """The same-tab "Back to the map" control."""
-    st.button("\u2190 Back to the map", on_click=_go, args=("ungaged",), key="back_to_map")
-
-
-def _go(page: str, site_no: Optional[str] = None) -> None:
-    # A button callback: switch page in this tab (a markdown link opens a new one).
-    params = {"page": page}
-    if site_no:
-        params["site"] = site_no
-    st.query_params.from_dict(params)
+    if st.button("\u2190 Back to the map", key="back_to_map"):
+        app_nav.go("ungaged")  # in this tab; a markdown link would open a new one
 
 
 def _links(site_no: str) -> str:
@@ -1398,9 +1392,10 @@ def _actions(site_no: str, can_run: bool) -> None:
     # A link, so the analysis opens in a new window (or tab, as the browser prefers) and
     # this page stays as it is. The new window is a new session: the site travels in the
     # URL, which the Flow Frequency page reads as a hand-off; run=1 starts the analysis there.
+    # "./" because this page lives at /gage and the Flow Frequency page at the app's root.
     col_run.link_button(
         "Open in Bulletin 17C (Flow Frequency page)",
-        f"?page=flowfrequency&site={site_no}&run=1",
+        f"./?page=flowfrequency&site={site_no}&run=1",
         type="primary",
         disabled=not can_run,
         help=(

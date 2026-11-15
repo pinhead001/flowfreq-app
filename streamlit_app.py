@@ -38,6 +38,7 @@ from flowfreq.workflow import (
     run_ffa,
 )
 
+import app_nav
 import gage_ui
 import ungaged_ui
 from ffa_export import export_comparison_csv, export_ffa_to_zip
@@ -492,8 +493,8 @@ _SITE_RE = re.compile(r"\d{8,15}")
 def requested_page(params: Mapping[str, str]) -> Optional[str]:
     """The page a ``?page=`` query parameter asks for, or ``None``.
 
-    The sidebar radio is the normal navigation; the parameter exists so a link -- the
-    basin map's gage popup -- can land on a page. ``gage`` takes ``&site=NNNNNNNN``.
+    Each page has its own URL path, which is the normal navigation; the parameter is the
+    older form of a link to a page, still honoured. ``gage`` takes ``&site=NNNNNNNN``.
     """
     return _PAGE_PARAMS.get(params.get("page", ""))
 
@@ -531,54 +532,82 @@ GAGE_PAGE_CURVE = gage_ui.CurveHooks(
     ),
 )
 
-if requested == PAGE_GAGE:
-    if linked_site:
-        gage_ui.render(linked_site, curve=GAGE_PAGE_CURVE)
+#: Page title to the name a link gives it, and the query parameters each page reads.
+_PAGE_NAME = {PAGE_GAGED: "flowfrequency", PAGE_UNGAGED: "ungaged", PAGE_GAGE: "gage"}
+_LINK_PARAMS = {
+    "flowfrequency": ("site", "run"),
+    "ungaged": ungaged_ui.LINK_PARAMS,
+    "gage": ("site",),
+}
+
+
+def link_target(params: Mapping[str, str], current: str) -> Optional[Tuple[str, Dict[str, str]]]:
+    """Where a ``?page=`` link leads, when that is not the page being shown.
+
+    Pages have their own URL paths now; ``?page=`` is the older form, which shared links
+    and bookmarks still carry. Such a link is redirected to the page's own path.
+
+    Parameters
+    ----------
+    params : mapping
+        The query parameters.
+    current : str
+        Name of the page the URL's path selects (see :data:`app_nav.PAGE_NAMES`).
+
+    Returns
+    -------
+    tuple of (str, dict) or None
+        The page's name and the query parameters to carry over to it; ``None`` when
+        the link names no page, or the current one.
+    """
+    wanted = requested_page(params)
+    name = _PAGE_NAME.get(wanted or "")
+    if name is None or name == current:
+        return None
+    return name, {key: params[key] for key in _LINK_PARAMS[name] if key in params}
+
+
+def _flow_frequency_page() -> None:
+    """The Flow Frequency page is the rest of this script, below the page router."""
+
+
+def _ungaged_page() -> None:
+    ungaged_ui.render()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(f"**flowfreq** v{__version__}")
+
+
+def _gage_page() -> None:
+    # The site comes from the URL. Without one -- the browser's Back button returns to
+    # this page without resending the query -- show the gage this session last opened.
+    if "site" in st.query_params:
+        site = linked_site
+    else:
+        site = st.session_state.get("_gage_site", "")
+    if site:
+        st.session_state["_gage_site"] = site
+        gage_ui.render(site, curve=GAGE_PAGE_CURVE)
     else:
         gage_ui.back_button()
         st.error("That is not a valid USGS site number (8 to 15 digits).")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
-    st.stop()
-
-_URL_FOR_PAGE = {PAGE_GAGED: "flowfrequency", PAGE_UNGAGED: "ungaged"}
 
 
-def apply_linked_page(
-    requested: Optional[str], params: Mapping[str, str], state: MutableMapping[str, Any]
-) -> None:
-    """Set the page radio's value before it is drawn: from a ``?page=`` link once per
-    distinct link, else the page last chosen.
-
-    The page is kept in ``_page``, outside the widget: Streamlit drops the state of a
-    widget a run does not draw, and the gage page does not draw the radio. A link (the
-    gage page's "Back to the map", a shared URL) moves it only when the URL's page differs
-    from the last one applied, so a rerun on the same URL does not undo a hand choice.
-    """
-    link = params.get("page", "")
-    if requested in _URL_FOR_PAGE and state.get("_page_link") != link:
-        state["_page"] = requested
-    if requested in _URL_FOR_PAGE or not link:
-        state["_page_link"] = link
-    state["page_radio"] = state.setdefault("_page", PAGE_GAGED)
-
-
-def _page_chosen() -> None:
-    # Choosing a page by hand: the URL names it, and drops the link's site and run.
-    st.session_state["_page"] = st.session_state["page_radio"]
-    link = _URL_FOR_PAGE[st.session_state["_page"]]
-    st.query_params.from_dict({"page": link})
-    st.session_state["_page_link"] = link
-
-
-apply_linked_page(requested, st.query_params, st.session_state)
-page = st.sidebar.radio(
-    "Page", [PAGE_GAGED, PAGE_UNGAGED], key="page_radio", horizontal=True, on_change=_page_chosen
-)
-
-if page == PAGE_UNGAGED:
-    ungaged_ui.render()
-    st.sidebar.markdown("---")
-    st.sidebar.markdown(f"**flowfreq** v{__version__}")
+# The gage page is reached from a gage on the map or a link, never from the menu.
+_PAGES = {
+    "flowfrequency": st.Page(_flow_frequency_page, title=PAGE_GAGED, default=True),
+    "ungaged": st.Page(_ungaged_page, title=PAGE_UNGAGED, url_path="ungaged"),
+    "gage": st.Page(_gage_page, title=PAGE_GAGE, url_path="gage", visibility="hidden"),
+}
+app_nav.register(_PAGES)
+_shown = st.navigation(list(_PAGES.values()))
+# By identity: a page has no title when the script is imported outside Streamlit.
+current_page = next((name for name, page in _PAGES.items() if page is _shown), "flowfrequency")
+_target = link_target(st.query_params, current_page)
+if _target is not None:
+    st.switch_page(_PAGES[_target[0]], query_params=_target[1] or None)
+_shown.run()
+if current_page != "flowfrequency":
     st.stop()
 
 # The Flow Frequency page. The map and gage pages above carry their own headers.
@@ -587,7 +616,7 @@ st.markdown(
     "Generate daily flow plots for USGS gages using [flowfreq](https://github.com/pinhead001/flowfreq)"
 )
 # Arrived from a gage page's "Open in Bulletin 17C" button.
-handed_off = requested == PAGE_GAGED and bool(linked_site)
+handed_off = bool(linked_site)
 # With run=1 the link also asks for the download and analysis to start on arrival.
 auto_run = handed_off and auto_run_requested(st.query_params, st.session_state)
 if auto_run:

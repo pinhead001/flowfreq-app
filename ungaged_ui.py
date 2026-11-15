@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import numbers
 import re
 import threading
@@ -41,6 +42,7 @@ from flowfreq.streamstats import (
 )
 from flowfreq.ungaged import SiteEstimate
 
+import app_nav
 from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
 from progress_ui import working
@@ -62,6 +64,12 @@ _SITE_RE = re.compile(r"\d{8,15}")
 #: Input values kept outside the widgets: Streamlit drops a widget's state on any run
 #: that does not draw it, so a trip to another page would empty the inputs.
 _KEPT = ("ungaged_lat", "ungaged_lon", "ungaged_state")
+#: Query parameters of a link to a point on this page (see :func:`link_query`).
+LINK_PARAMS = ("lat", "lon", "state")
+#: Session key of the last such link applied, so that it is applied once.
+LINK_KEY = "ungaged_link"
+#: Map zoom on arrival from a link: close enough to see the stream the point is on.
+LINK_ZOOM = 12.0
 
 #: Shown beside the checkbox once it is ticked, before anything runs.
 EXTRAPOLATION_CAUTION = (
@@ -1053,6 +1061,79 @@ def _status_line(result: Optional[Dict[str, Any]]) -> None:
         st.info("The basin from the earlier delineation is still shown on the map.")
 
 
+def link_query(inputs: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """The query parameters of a link that reopens this page at the inputs' point.
+
+    Parameters
+    ----------
+    inputs : mapping
+        The page's inputs: ``lat``, ``lon`` and ``state``. The other inputs (AEPs, the
+        snapshot and extrapolation switches) are not part of a link.
+
+    Returns
+    -------
+    dict or None
+        ``lat`` and ``lon`` to six decimals, and ``state`` when one is chosen; ``None``
+        without both coordinates.
+    """
+    lat, lon = inputs.get("lat"), inputs.get("lon")
+    if lat is None or lon is None:
+        return None
+    query = {"lat": f"{float(lat):.6f}", "lon": f"{float(lon):.6f}"}
+    if inputs.get("state"):
+        query["state"] = str(inputs["state"])
+    return query
+
+
+def point_from_link(
+    params: Dict[str, str], codes: Sequence[str]
+) -> Optional[Tuple[float, float, Optional[str]]]:
+    """The point a link's query parameters name.
+
+    Parameters
+    ----------
+    params : mapping
+        The query parameters (see :func:`link_query`).
+    codes : sequence of str
+        The jurisdiction selectbox's options.
+
+    Returns
+    -------
+    tuple or None
+        Latitude, longitude and jurisdiction code. The code is the link's ``state`` when
+        that is one of ``codes``, else the jurisdiction containing the point, else
+        ``None``. The whole result is ``None`` unless both coordinates are numbers in
+        range.
+    """
+    try:
+        lat, lon = float(params["lat"]), float(params["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (math.isfinite(lat) and math.isfinite(lon)):
+        return None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    lat, lon = round(lat, 6), round(lon, 6)
+    code: Optional[str] = str(params.get("state", "")).upper()
+    if code not in codes:
+        code = state_at(lat, lon)
+    return lat, lon, code if code in codes else None
+
+
+def point_url(query: Dict[str, str]) -> str:
+    """The address of a link to a point, from :func:`link_query`'s parameters.
+
+    Absolute when the browser's address is known. Off the page's own path (``/ungaged``)
+    the link names the page with ``page=ungaged``, which the app redirects.
+    """
+    try:
+        base = str(st.context.url or "").split("?")[0]
+    except Exception:  # noqa: BLE001 - no browser behind this run: a relative link
+        base = ""
+    pairs = dict(query) if base.rstrip("/").endswith("/ungaged") else {"page": "ungaged", **query}
+    return base + "?" + "&".join(f"{key}={value}" for key, value in pairs.items())
+
+
 #: Session key for a request to move the map, from the sidebar's view buttons.
 FOCUS_KEY = "map_focus"
 
@@ -1074,6 +1155,16 @@ def render() -> None:
     for key in _KEPT:  # back from another page: restore what the widgets lost
         if key not in st.session_state and f"_{key}" in st.session_state:
             st.session_state[key] = st.session_state[f"_{key}"]
+    link = point_from_link(st.query_params, codes)
+    if link is not None and st.session_state.get(LINK_KEY) != link:
+        # Arrived on a link to a point. Applied once: later runs on the same URL leave
+        # the inputs to the user. With a jurisdiction the estimate starts on arrival.
+        st.session_state[LINK_KEY] = link
+        st.session_state["ungaged_lat"], st.session_state["ungaged_lon"] = link[0], link[1]
+        st.session_state["map_view"] = (link[0], link[1], LINK_ZOOM)
+        if link[2] is not None:
+            st.session_state["ungaged_state"] = link[2]
+            st.session_state[PENDING_KEY] = "estimate"
     st.session_state.setdefault("ungaged_lat", None)
     st.session_state.setdefault("ungaged_lon", None)
     st.session_state.setdefault("map_mode", default_mode())
@@ -1096,8 +1187,7 @@ def render() -> None:
     )
     action = handle_map_event(event, codes)
     if action == "gage":
-        st.query_params.from_dict({"page": "gage", "site": st.session_state.pop("map_gage")})
-        st.rerun()
+        app_nav.go("gage", site=st.session_state.pop("map_gage"))
     notice = st.session_state.pop("map_notice", None)
     if notice:
         st.warning(notice)
@@ -1165,6 +1255,13 @@ def render() -> None:
         "snapshot": bool(snapshot),
         "extrapolate": bool(extrapolate),
     }
+    if link is not None and (
+        (current["lat"], current["lon"]) != link[:2] or link[2] not in (None, state)
+    ):
+        # The inputs moved off the linked point: the address must not go on naming it.
+        for key in LINK_PARAMS:
+            if key in st.query_params:
+                del st.query_params[key]
     stored = st.session_state.get(RESULT_KEY)
     if stored and stored.get("inputs") is not None and stored["inputs"] != current:
         # The widgets moved on: the result (and any overlap choice) belongs to old inputs.
@@ -1193,6 +1290,11 @@ def render() -> None:
         else:
             _store(current)
             st.rerun()  # so the map, drawn above, receives the basin
+    query = link_query(current)
+    if query is not None:
+        with side.expander("Link to this point"):
+            st.code(point_url(query), language=None, wrap_lines=True)
+            st.caption("Opens this page at this point and runs the estimate.")
 
     _characteristics_form(state, current)
 
