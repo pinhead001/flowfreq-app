@@ -491,15 +491,15 @@ def _app_with(params, state=None):
     return at.run()
 
 
-def _open(at, page=None, **query):
+def _open(at, page="gaged", **query):
     """Run the app again on ``page``, as a ``?page=`` link would.
 
-    AppTest starts every run on the default page (the Flow Frequency page) and does not
-    remember a page switch, so a test that stays on another page names it for each run.
+    Every run names its page, the Flow Frequency page included. Whether AppTest remembers
+    a page switch depends on the Streamlit version: 1.63 starts every run on the default
+    page, 1.67 stays on the page the last run switched to.
     """
     at.query_params.clear()
-    if page is not None:
-        at.query_params["page"] = page
+    at.query_params["page"] = page
     for key, value in query.items():
         at.query_params[key] = value
     return at.run()
@@ -560,9 +560,9 @@ def test_bad_site_page_uses_the_back_button():
 
 
 def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
-    # In the session before the first run rather than typed: every AppTest run starts on
-    # the Flow Frequency page, which does not draw these inputs, so a typed value would be
-    # dropped before the Ungaged page could keep it.
+    # In the session before the first run rather than typed: under Streamlit 1.63 every
+    # AppTest run starts on the Flow Frequency page, which does not draw these inputs, so
+    # a typed value would be dropped before the Ungaged page could keep it.
     at = _app_with({"page": "ungaged"}, state={"ungaged_lat": 46.87, "ungaged_lon": -113.99})
     assert at.number_input(key="ungaged_lat").value == 46.87
     # Streamlit drops the state of widgets a run does not draw, as on the Gaged page.
