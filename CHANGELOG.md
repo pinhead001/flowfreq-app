@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Ungaged page: the estimate as a frequency curve, with a gage's fit over it
+
+An estimate is now drawn as well as tabulated: flow on a log axis against annual exceedance probability on a
+normal-probability axis, the regression's quantiles joined by a line with its prediction interval as a band (where
+the equations publish one). Where the point is within 1 km of a gage in flowfreq's catalog, the page names the gage,
+its distance and both drainage areas, and **Overlay the fit** downloads that gage's peaks and lays its Bulletin 17C
+curve and 90-percent confidence limits over the regression. The fit is the Flow Frequency page's default one, the
+same the gage page draws; nothing is downloaded or fitted until the button is pressed, and a fit that is refused (a
+regulated record, no published skew) says so under the regression curve. The two curves differ in colour, dash and
+point shape.
+
 ### Ungaged page: estimate from basin characteristics you enter
 
 A "Basin characteristics (no StreamStats)" form on the ungaged page takes a region and the characteristics its
