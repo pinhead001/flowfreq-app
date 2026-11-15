@@ -24,6 +24,7 @@ gage_ui.py           the gage page (`render(site, curve)`), opened from the map'
 vega_component/      daily-chart component: vega-embed with resizable brush grips (`index.html`), `vega_chart()`
 map_component/       the basin map: build-less MapLibre component (`index.html`), `basin_map()`, bundled `states.geojson`
 map_geo.py           point-in-state and basin preparation for the map (pure Python, no GIS dependency)
+streamstats_health.py  the ungaged page's StreamStats banner: one kept check (`status`), `banner_text`, `show`; `tests/conftest.py` stubs the check so no test reaches StreamStats
 tools/               one-off generators, e.g. `build_states_geojson.py` (regenerates `map_component/states.geojson`)
 ffa_runner.py        display formatting: pandas frames of pre-formatted strings
 ffa_export.py        ZIP export (PNG, CSV, LP3 parameters)
