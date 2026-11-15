@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -19,6 +20,9 @@ STATES_PATH = Path(__file__).resolve().parent / "map_component" / "states.geojso
 #: 10 m DEM cells and run to thousands of vertices; a state line crossing that falls
 #: between two of this many evenly spaced samples would be a sliver of the basin.
 MAX_BASIN_SAMPLES = 600
+
+#: Kilometres in one degree of latitude (mean Earth radius 6371.0088 km).
+KM_PER_DEGREE = 111.195
 
 Ring = Sequence[Sequence[float]]
 BBox = Tuple[float, float, float, float]
@@ -150,6 +154,65 @@ def states_touching(basin: Dict[str, Any]) -> List[str]:
         ):
             found.add(code)
     return sorted(found)
+
+
+def _outline_km(lat: float, lon: float, polygons: List[List[Ring]]) -> float:
+    # Flat-earth distance to the nearest ring segment, in a plane centred on the point:
+    # good to well under 1 percent over the tens of km this is used for.
+    kx, ky = KM_PER_DEGREE * math.cos(math.radians(lat)), KM_PER_DEGREE
+    best = math.inf
+    for polygon in polygons:
+        for ring in polygon:
+            ax, ay = (ring[-1][0] - lon) * kx, (ring[-1][1] - lat) * ky
+            for vertex in ring:
+                bx, by = (vertex[0] - lon) * kx, (vertex[1] - lat) * ky
+                dx, dy = bx - ax, by - ay
+                length = dx * dx + dy * dy
+                t = 0.0 if length == 0 else max(0.0, min(1.0, -(ax * dx + ay * dy) / length))
+                best = min(best, math.hypot(ax + t * dx, ay + t * dy))
+                ax, ay = bx, by
+    return best
+
+
+def states_within(lat: float, lon: float, km: float) -> Dict[str, float]:
+    """The states and territories within a distance of a point, nearest first.
+
+    The bundled outlines are simplified, so a distance is good to a kilometre or two.
+    Nothing wraps at the antimeridian.
+
+    Parameters
+    ----------
+    lat, lon : float
+        Decimal degrees WGS84.
+    km : float
+        How far to look, in kilometres.
+
+    Returns
+    -------
+    dict
+        Code to the distance in kilometres from the point to that state's outline:
+        ``0.0`` for the state the point is in. Empty when nothing is that near.
+
+    Raises
+    ------
+    ValueError
+        If ``km`` is negative.
+    """
+    if km < 0:
+        raise ValueError(f"km must be 0 or more, got {km}")
+    dy = km / KM_PER_DEGREE
+    dx = dy / max(math.cos(math.radians(lat)), 1e-6)
+    found: Dict[str, float] = {}
+    for code, polygons, bbox in _indexed():
+        if not (bbox[0] - dx <= lon <= bbox[2] + dx and bbox[1] - dy <= lat <= bbox[3] + dy):
+            continue
+        if _in_bbox(lon, lat, bbox) and _in_polygons(lon, lat, polygons):
+            found[code] = 0.0
+            continue
+        distance = _outline_km(lat, lon, polygons)
+        if distance <= km:
+            found[code] = distance
+    return dict(sorted(found.items(), key=lambda item: (item[1], item[0])))
 
 
 def _round(coords: Any, ndigits: int) -> Any:

@@ -33,6 +33,17 @@ rather than only how to proceed. An extrapolated result carries a warning naming
 the calibrated range, the status line says so, and a comparison names the states affected. The table's column and
 the report's caveat already recorded it.
 
+### Ungaged page: a caution near a border where two states' equations disagree
+
+flowfreq measured, at gages within 20 km of each state line, how far the neighboring state's equations run from
+the home state's on the same basins. On 17 borders the difference is systematic: Connecticut's equations give a
+median 2.39 times Rhode Island's at the 1 percent AEP on Rhode Island basins near the line, for one. An estimate
+at a point within 20 km of such a neighbor now says so above the result: how far the other state is, what was
+measured, and which state's equations sat nearer the at-site Bulletin 17C fits. Nothing is adjusted. Distances
+come from the bundled state outlines (`map_geo.states_within`), which are simplified, so they are good to a
+kilometre or two. It needs flowfreq 0.27 (`flowfreq.regression.border_offsets_between`) and stays hidden on an
+older pin.
+
 ### Basin map: back to the point after a basin zooms out
 
 A delineated basin already zooms the map out to its whole extent. Two buttons now appear under the jump buttons

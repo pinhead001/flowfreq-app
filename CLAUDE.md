@@ -23,7 +23,7 @@ ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate`/`run_deli
 gage_ui.py           the gage page (`render(site, curve)`), opened from the map's gage popups; `load_site`/`load_peaks` (never raise); `curve` is the Flow Frequency page's fit (`CurveHooks`), for the curve in place
 vega_component/      daily-chart component: vega-embed with resizable brush grips (`index.html`), `vega_chart()`
 map_component/       the basin map: build-less MapLibre component (`index.html`), `basin_map()`, bundled `states.geojson`
-map_geo.py           point-in-state and basin preparation for the map (pure Python, no GIS dependency)
+map_geo.py           point-in-state, distance to nearby states and basin preparation for the map (pure Python, no GIS dependency)
 tools/               one-off generators, e.g. `build_states_geojson.py` (regenerates `map_component/states.geojson`)
 ffa_runner.py        display formatting: pandas frames of pre-formatted strings
 ffa_export.py        ZIP export (PNG, CSV, LP3 parameters)

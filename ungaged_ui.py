@@ -42,13 +42,18 @@ from flowfreq.streamstats import (
 from flowfreq.ungaged import SiteEstimate
 
 from map_component import MODES, IdentityCache, basin_map
-from map_geo import state_at, states_touching
+from map_geo import state_at, states_touching, states_within
 from progress_ui import working
 
 try:  # flowfreq 0.26: the regression from characteristics the user supplies
     from flowfreq import estimate_from_characteristics
 except ImportError:  # an older pin: the form stays hidden
     estimate_from_characteristics = None  # type: ignore[assignment]
+
+try:  # flowfreq 0.27: the borders where two states' equations differ systematically
+    from flowfreq.regression import BORDER_KM, border_offsets_between
+except ImportError:  # an older pin: no caution is shown
+    BORDER_KM, border_offsets_between = 20.0, None  # type: ignore[assignment]
 
 #: Jurisdictions StreamStats has no stream grid for: the form opens there by default.
 NO_STREAMSTATS = ("FL", "MI", "NE")
@@ -783,6 +788,51 @@ def _characteristics_form(state: Optional[str], current: Dict[str, Any]) -> None
             st.rerun()  # the status line, under the map, shows it
 
 
+def border_cautions(lat: float, lon: float, state: str) -> List[str]:
+    """What to say about an estimate near a border where two states' equations disagree.
+
+    The library measured, at gages near each state line, how far the neighbor's equations
+    run from the home state's on the same basins. Where that difference is systematic and
+    the point is within ``BORDER_KM`` of the other state, the reader should know. Nothing
+    is adjusted here or in the library.
+
+    Parameters
+    ----------
+    lat, lon : float
+        The point, decimal degrees WGS84.
+    state : str
+        The jurisdiction whose equations the estimate uses.
+
+    Returns
+    -------
+    list of str
+        One message per neighboring state with a systematic difference, nearest first.
+        Empty away from such a border, and with a flowfreq that does not have the table.
+    """
+    if border_offsets_between is None:
+        return []
+    messages = []
+    for other, km in states_within(lat, lon, BORDER_KM).items():
+        if other == state:
+            continue
+        offsets = border_offsets_between(state, other)
+        if not offsets:
+            continue
+        if km == 0:
+            where = f"This point is in {_state_name(other)}"
+        elif km < 1:
+            where = f"This point is less than 1 km from {_state_name(other)}"
+        else:
+            where = f"This point is about {km:.0f} km from {_state_name(other)}"
+        messages.append(
+            f"{where}, and the two states' equations differ systematically along this border. "
+            + " ".join(offset.describe() for offset in offsets)
+            + f" This estimate uses the {_state_name(state)} equations as published: "
+            "nothing is adjusted."
+        )
+    return messages
+
+
 def _show_estimate(estimate: SiteEstimate) -> None:
     if estimate.library_status == "nss_snapshot" or estimate.advisory:
         st.warning(
@@ -792,6 +842,8 @@ def _show_estimate(estimate: SiteEstimate) -> None:
     extrapolated = extrapolation_warning(estimate)
     if extrapolated:
         st.warning(extrapolated)
+    for caution in border_cautions(estimate.lat, estimate.lon, estimate.state):
+        st.warning(caution)
     st.subheader(f"Estimate at {estimate.lat:.4f}, {estimate.lon:.4f} ({estimate.state})")
     st.caption(f"Method: {estimate.method}. Equation library: {estimate.library_status}.")
     chosen = chosen_set_caption(estimate)
