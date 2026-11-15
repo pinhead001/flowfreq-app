@@ -143,7 +143,9 @@ def _fetch_site(site_no: str) -> Dict[str, Any]:
 
 @st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
 def _fetch_peaks(site_no: str) -> Optional[pd.DataFrame]:
-    return USGSgage(site_no).download_peak_flow()
+    # The page takes the name, area and location from _fetch_site, so the peaks do
+    # not ask for the monitoring-location record a second time.
+    return USGSgage(site_no).download_peak_flow(site_metadata=False)
 
 
 #: Daily records kept at once: a century of daily values is about 0.6 MB.
@@ -289,6 +291,10 @@ def peak_chart(
 ) -> alt.Chart:
     """Annual peaks as bars on a numeric water-year axis, so gaps in the record show.
 
+    The axis runs from the year before the first peak to the year after the last, and
+    no further: left to round itself, a long record's axis ran on to the next round
+    number (2040 for a record that ends in the 2020s).
+
     A ``change_year`` (from :func:`change_year`) draws a dashed line there, labelled.
     ``events`` (``(label, year)``, from :func:`load_basin_events`) draw dotted green
     lines, labelled in their tooltips; those outside the record's years are left off so
@@ -299,11 +305,17 @@ def peak_chart(
         qualification_code=lambda d: d["qualification_code"].astype("string").fillna(""),
     )
     data["kind"] = data["qualification_code"].map(peak_kind)
+    first, last = int(data["water_year"].min()), int(data["water_year"].max())
     bars = (
         alt.Chart(data)
         .mark_bar(size=3)
         .encode(
-            x=alt.X("water_year:Q", title="Water year", axis=alt.Axis(format="d")),
+            x=alt.X(
+                "water_year:Q",
+                title="Water year",
+                axis=alt.Axis(format="d", tickMinStep=1),
+                scale=alt.Scale(domain=[first - 1, last + 1], nice=False, zero=False),
+            ),
             y=alt.Y("peak_flow_cfs:Q", title="Peak flow (cfs)"),
             color=alt.Color(
                 "kind:N",
@@ -321,7 +333,6 @@ def peak_chart(
         .properties(height=260)
     )
     layers: List[Any] = [bars]
-    first, last = data["water_year"].min(), data["water_year"].max()
     shown = [(str(label), int(year)) for label, year in events if first <= year <= last]
     if shown:
         frame = pd.DataFrame(shown, columns=["event", "year"])
@@ -930,6 +941,29 @@ def daily_csv(daily: pd.DataFrame) -> str:
 def peaks_csv(peaks: pd.DataFrame) -> str:
     """The annual peaks as CSV, as USGS reports them."""
     return peaks.to_csv(index=False, date_format="%Y-%m-%d")
+
+
+def curve_csv(result: Dict[str, Any]) -> str:
+    """A fit's frequency curve as CSV: its quantile table, numbers unrounded.
+
+    Parameters
+    ----------
+    result : dict
+        A successful fit from :attr:`CurveHooks.fit`, with ``quantile_df``.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    ValueError
+        The fit failed, or has no quantiles.
+    """
+    table = result.get("quantile_df")
+    if result.get("error") or table is None or table.empty:
+        raise ValueError("no fitted curve to write: the fit failed or has no quantiles")
+    return str(table.to_csv(index=False))
 
 
 #: Bar categories for the peak chart, with their colours. Codes are USGS peak
@@ -1600,6 +1634,13 @@ def curve_section(site_no: str, name: str, peaks: pd.DataFrame, hooks: CurveHook
         for heading, table in hooks.tables(result):
             st.markdown(heading)
             st.dataframe(table, use_container_width=True)
+    st.download_button(
+        "Fitted curve (CSV)",
+        curve_csv(result),
+        file_name=f"{site_no}_b17c_curve.csv",
+        mime="text/csv",
+        help="The curve as drawn: flow and its 90% confidence limits at each return interval.",
+    )
 
 
 def render(site_no: str, curve: Optional[CurveHooks] = None) -> None:
@@ -1664,5 +1705,3 @@ def render(site_no: str, curve: Optional[CurveHooks] = None) -> None:
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
-    with st.expander("Coming to this page"):
-        st.markdown("- Direct data downloads of the peaks, the daily record and the fitted curve")

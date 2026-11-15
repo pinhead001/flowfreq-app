@@ -842,6 +842,10 @@ def test_gage_page_draws_the_real_curve_in_place(app_module, monkeypatch):
     assert not at.exception
     assert not at.error
     assert at.get("image")
+    # The three downloads the page used to promise: the daily record, the peaks, the curve.
+    labels = [b.proto.label for b in at.get("download_button")]
+    assert {"Daily values (CSV)", "Annual peaks (CSV)", "Fitted curve (CSV)"} <= set(labels)
+    assert not any(e.label == "Coming to this page" for e in at.expander)
     assert any("Weighted Skew" in m.value for m in at.markdown)
 
 
