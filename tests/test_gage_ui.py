@@ -990,7 +990,9 @@ def fake_basin(monkeypatch):
     monkeypatch.setattr(gage_ui, "_fetch_basin", _with_clear(fake.fetch_basin))
     monkeypatch.setattr(gage_ui, "_fetch_impervious", _with_clear(fake.fetch_impervious))
     monkeypatch.setattr(gage_ui, "_nid", lambda: SimpleNamespace(dams=DAMS))
-    return fake
+    gage_ui.forget_failures()
+    yield fake
+    gage_ui.forget_failures()
 
 
 def test_basin_events_date_the_large_dams_in_the_basin():
@@ -1022,6 +1024,76 @@ def test_basin_events_without_the_nid_say_so(monkeypatch):
     out = gage_ui.load_basin_events(SITE)
     assert not out["dams_checked"] and out["events"] == []
     assert any("National Inventory of Dams" in n for n in out["notes"])
+
+
+def test_a_failed_basin_outline_is_not_asked_for_again_at_once(fake_basin, monkeypatch):
+    clock = [5000.0]
+    monkeypatch.setattr(gage_ui.time, "monotonic", lambda: clock[0])
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    first = gage_ui.load_basin_events(SITE)
+    fake_basin.basin = BASIN  # NLDI is back, but the page does not ask yet
+    clock[0] += gage_ui.FAILURE_TTL_S - 1
+    again = gage_ui.load_basin_events(SITE)
+    assert fake_basin.basin_calls == 1
+    assert again == first and not again["dams_checked"]
+    assert any("tried again 5 minutes after a failure" in n for n in again["notes"])
+    # Another gage is another question.
+    assert gage_ui.load_basin_events("01646500")["dams_checked"]
+    assert fake_basin.basin_calls == 2
+    clock[0] += 1  # five minutes on, it asks again
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert fake_basin.basin_calls == 3
+
+
+def test_a_gage_nldi_has_no_basin_for_is_not_asked_for_again_at_once(fake_basin):
+    fake_basin.basin = ValueError("NLDI returned no basin polygon for this gage")
+    first = gage_ui.load_basin_events(SITE)
+    assert gage_ui.load_basin_events(SITE) == first
+    assert fake_basin.basin_calls == 1
+    assert any("no basin polygon" in n for n in first["notes"])
+
+
+def test_a_failed_inventory_is_not_downloaded_again_at_once(monkeypatch):
+    calls = []
+
+    def nid():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("no network")
+        return SimpleNamespace(dams=DAMS)
+
+    clock = [5000.0]
+    monkeypatch.setattr(gage_ui.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(gage_ui, "_nid", nid)
+    first = gage_ui.load_basin_events(SITE)
+    assert not first["dams_checked"]
+    assert any("tried again 5 minutes after a failure" in n for n in first["notes"])
+    # The inventory is one download for every gage, so another gage does not retry it.
+    assert gage_ui.load_basin_events("01646500")["notes"] == first["notes"]
+    assert len(calls) == 1
+    clock[0] += gage_ui.FAILURE_TTL_S
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert len(calls) == 2
+
+
+def test_try_again_forgets_a_remembered_failure(fake_basin):
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    gage_ui.load_basin_events(SITE)
+    fake_basin.basin = BASIN
+    gage_ui.clear_caches()  # the page's "Try again" button
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert fake_basin.basin_calls == 2
+
+
+def test_a_remembered_failure_does_not_grow_its_traceback(fake_basin):
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    for _ in range(3):
+        gage_ui.load_basin_events(SITE)
+    ((_, kept),) = gage_ui._failures.values()
+    depth, tb = 0, kept.__traceback__
+    while tb is not None:
+        depth, tb = depth + 1, tb.tb_next
+    assert depth <= 2  # raised here and caught in load_basin_events, no more
 
 
 def test_basin_events_date_impervious_cover_crossing_the_urban_threshold():

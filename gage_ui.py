@@ -22,6 +22,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -166,6 +167,7 @@ def clear_caches() -> None:
     _cached_fit.clear()
     _fetch_basin.clear()
     _fetch_impervious.clear()
+    forget_failures()
 
 
 def load_site(site_no: str) -> Dict[str, Any]:
@@ -1158,6 +1160,45 @@ IMPERVIOUS_KEY = "gage_impervious"
 IMPERVIOUS_REQUEST_KEY = "gage_impervious_request"
 
 
+#: How long a failed basin-outline or dam-inventory lookup stands before it is tried
+#: again, in seconds. Streamlit caches answers, not exceptions, so without this every
+#: rerun of the page (a slider, a tab) waited out the same outage again: up to 60 s for
+#: NLDI, and three tries at an 82 MB download for the inventory.
+FAILURE_TTL_S = 300
+
+_failures: Dict[Tuple[str, ...], Tuple[float, Exception]] = {}
+_failures_lock = threading.Lock()
+
+
+def _unless_just_failed(key: Tuple[str, ...], lookup: Callable[[], Any]) -> Any:
+    """``lookup()``, unless it failed under ``key`` within :data:`FAILURE_TTL_S`.
+
+    A failure is kept and raised again, unasked, until it is that old. A success is not
+    kept here: the lookups cache their own.
+    """
+    with _failures_lock:
+        kept = _failures.get(key)
+        if kept is not None and time.monotonic() < kept[0]:
+            raise kept[1].with_traceback(None)  # or every raise would lengthen it
+        _failures.pop(key, None)
+    try:
+        return lookup()
+    except Exception as exc:
+        with _failures_lock:
+            _failures[key] = (time.monotonic() + FAILURE_TTL_S, exc)
+        raise
+
+
+def forget_failures() -> None:
+    """Drop the remembered lookup failures, so the next view tries again."""
+    with _failures_lock:
+        _failures.clear()
+
+
+def _retry_note() -> str:
+    return f"It is tried again {FAILURE_TTL_S // 60} minutes after a failure."
+
+
 @st.cache_data(ttl=CACHE_TTL_S, max_entries=32, show_spinner=False)
 def _fetch_basin(site_no: str) -> Dict[str, Any]:
     response = requests.get(NLDI_BASIN_URL.format(site=site_no), params={"f": "json"}, timeout=60)
@@ -1197,6 +1238,9 @@ def load_basin_events(
     comes from ``impervious``, when the caller has it. Both go through
     :func:`flowfreq.stationarity.basin_change_events`.
 
+    A basin outline or an inventory that could not be had is not asked for again for
+    :data:`FAILURE_TTL_S`: the same note comes back at once.
+
     Parameters
     ----------
     site_no : str
@@ -1217,20 +1261,24 @@ def load_basin_events(
     geometry: Optional[Dict[str, Any]] = None
     nid: Any = None
     try:
-        geometry = _fetch_basin(site_no)
+        geometry = _unless_just_failed(("basin", site_no), lambda: _fetch_basin(site_no))
     except requests.RequestException as exc:
         notes.append(
-            f"Dams not checked: the basin outline (USGS NLDI) is unavailable ({network_message(exc)})."
+            "Dams not checked: the basin outline (USGS NLDI) is unavailable "
+            f"({network_message(exc)}). {_retry_note()}"
         )
     except Exception as exc:  # noqa: BLE001 - a missing basin is a note, never a traceback
         logger.warning("NLDI basin failed for %s: %s", site_no, exc)
         notes.append(f"Dams not checked: {exc}.")
     if geometry is not None:
         try:
-            nid = _nid()
+            nid = _unless_just_failed(("nid",), _nid)
         except Exception as exc:  # noqa: BLE001 - NIDUnavailableError, or anything else
             logger.warning("NID unavailable: %s", exc)
-            notes.append("Dams not checked: the National Inventory of Dams could not be loaded.")
+            notes.append(
+                "Dams not checked: the National Inventory of Dams could not be loaded. "
+                + _retry_note()
+            )
             geometry = None
     try:
         found = basin_change_events(
