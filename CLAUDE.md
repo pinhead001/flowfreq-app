@@ -23,8 +23,9 @@ ungaged_ui.py       the ungaged-site page (`render()`), `run_estimate`/`run_deli
 ungaged_curve.py    the ungaged page's frequency curve: the regression with its prediction band, and a gage's fit over it where the point is at a gage (`show(estimate, gage_fit)`)
 gage_ui.py           the gage page (`render(site, curve)`), opened from the map's gage popups; `load_site`/`load_peaks` (never raise); `curve` is the Flow Frequency page's fit (`CurveHooks`), for the curve in place
 vega_component/      daily-chart component: vega-embed with resizable brush grips (`index.html`), `vega_chart()`
+app_nav.py           page switching: `register(pages)` from streamlit_app, `go(page, **query)` from the page modules; pages live at `/`, `/ungaged`, `/gage`
 map_component/       the basin map: build-less MapLibre component (`index.html`), `basin_map()`, bundled `states.geojson`
-map_geo.py           point-in-state and basin preparation for the map (pure Python, no GIS dependency)
+map_geo.py           point-in-state, distance to nearby states and basin preparation for the map (pure Python, no GIS dependency)
 streamstats_health.py  the ungaged page's StreamStats banner: one kept check (`status`), `banner_text`, `show`; `tests/conftest.py` stubs the check so no test reaches StreamStats
 tools/               one-off generators, e.g. `build_states_geojson.py` (regenerates `map_component/states.geojson`)
 ffa_runner.py        display formatting: pandas frames of pre-formatted strings

@@ -293,7 +293,8 @@ def test_b17c_link_opens_the_gaged_page_in_a_new_window(monkeypatch):
     # A link button (target _blank), so the gage page stays open beside the analysis. The
     # new window is a new session: the site travels in the URL, not in session state.
     link = _b17c(_run(monkeypatch))
-    assert link.url == f"?page=flowfrequency&site={SITE}&run=1"  # and run it on arrival
+    # "./": the gage page lives at /gage, the Flow Frequency page at the app's root.
+    assert link.url == f"./?page=flowfrequency&site={SITE}&run=1"  # and run it on arrival
     assert not link.disabled
 
 
@@ -940,7 +941,7 @@ def test_button_draws_the_curve_and_tables_in_place(curve_page):
     assert any("Frequency Table" in m.value for m in at.markdown)
     assert any("default settings" in c.value for c in at.caption)
     # The way on to the full analysis is still there.
-    assert _b17c(at).url == f"?page=flowfrequency&site={SITE}&run=1"
+    assert _b17c(at).url == f"./?page=flowfrequency&site={SITE}&run=1"
 
 
 def test_curve_stays_drawn_and_is_not_refitted_on_rerun(curve_page):

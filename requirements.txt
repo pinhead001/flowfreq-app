@@ -1,6 +1,6 @@
-# >=1.40: the oldest release the app is tested against; st.columns(vertical_alignment=)
-# alone needs 1.36.
-streamlit>=1.40.0
+# >=1.55: st.Page(visibility=), which keeps the gage page out of the menu. Passing
+# query parameters to st.switch_page needs 1.52.
+streamlit>=1.55.0
 
 # The analysis library, pinned to a tag. A change in flowfreq cannot reach this
 # app until this line is bumped, which is the point of pinning rather than

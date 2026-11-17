@@ -53,15 +53,42 @@ outline is remembered per gage, the inventory for every gage.
 
 - A failed web request reads as one line naming the service -- "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov", "could not connect to api.waterdata.usgs.gov" -- instead of quoting the whole URL with its query string. The full text goes to the log. Applies to the Ungaged page's Delineate and Estimate, and to the Flow Frequency page's regional-skew lookup, peak download and processing errors.
 
+### Pages have their own addresses, and a point has a link
+
+- Each page has its own address: `/` (Flow Frequency), `/ungaged` and `/gage?site=NNNNNNNN`. The pages are chosen
+  from a menu at the top of the sidebar, which replaces the **Page** radio, and the browser's Back and Forward
+  buttons now move between them. Links in the older form (`?page=ungaged`, `?page=gage&site=`,
+  `?page=flowfrequency&site=&run=1`) still work: they are redirected to the page's own address.
+- The Ungaged page offers a **Link to this point** in the sidebar once a point is set, e.g.
+  `/ungaged?lat=36.040000&lon=-88.230000&state=TN`. Opening it fills the point and the jurisdiction, zooms the map
+  there and runs the estimate. The link carries the point and the jurisdiction only, not the AEPs or the snapshot
+  and extrapolation switches. Moving the point takes the link out of the address bar.
+- The gage page opened without a site (the browser's Back button returns to `/gage` without one) shows the gage
+  this session last opened.
+- On a phone-width screen the map's style buttons (DEM, Night, Green) sit below the jump buttons instead of over
+  them.
+- Needs Streamlit 1.55 or later (`requirements.txt` says so).
+
 ### Page switching keeps your place
 
-- The sidebar **Page** choice and the Flow Frequency page's gage number survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page, and "Back to the map" from a gage page returns to the Ungaged page even when it was chosen on the radio. Choosing a page puts it in the URL (`?page=ungaged`, `?page=flowfrequency`) instead of clearing the URL.
+- The Flow Frequency page's gage number and the Ungaged page's point survive a trip to another page: a gage number typed, or filled in from a gage page's Bulletin 17C link, is still there after visiting the Ungaged page.
 ### Ungaged page: cautions about extrapolation and marks it
 
 Ticking 'Allow extrapolation' now shows a caution before anything runs, and a refusal says what ticking it means
 rather than only how to proceed. An extrapolated result carries a warning naming the AEPs and the inputs outside
 the calibrated range, the status line says so, and a comparison names the states affected. The table's column and
 the report's caveat already recorded it.
+
+### Ungaged page: a caution near a border where two states' equations disagree
+
+flowfreq measured, at gages within 20 km of each state line, how far the neighboring state's equations run from
+the home state's on the same basins. On 17 borders the difference is systematic: Connecticut's equations give a
+median 2.39 times Rhode Island's at the 1 percent AEP on Rhode Island basins near the line, for one. An estimate
+at a point within 20 km of such a neighbor now says so above the result: how far the other state is, what was
+measured, and which state's equations sat nearer the at-site Bulletin 17C fits. Nothing is adjusted. Distances
+come from the bundled state outlines (`map_geo.states_within`), which are simplified, so they are good to a
+kilometre or two. It needs flowfreq 0.27 (`flowfreq.regression.border_offsets_between`) and stays hidden on an
+older pin.
 
 ### Basin map: back to the point after a basin zooms out
 

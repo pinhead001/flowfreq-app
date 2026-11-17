@@ -479,12 +479,28 @@ def test_requested_page(app_module, params, page):
     assert app_module.requested_page(params) == page
 
 
-def _app_with(params):
+def _app_with(params, state=None):
     from streamlit.testing.v1 import AppTest
 
     path = pathlib.Path(__file__).resolve().parent.parent / "streamlit_app.py"
     at = AppTest.from_file(str(path), default_timeout=60)
     for key, value in params.items():
+        at.query_params[key] = value
+    for key, value in (state or {}).items():
+        at.session_state[key] = value
+    return at.run()
+
+
+def _open(at, page="gaged", **query):
+    """Run the app again on ``page``, as a ``?page=`` link would.
+
+    Every run names its page, the Flow Frequency page included. Whether AppTest remembers
+    a page switch depends on the Streamlit version: 1.63 starts every run on the default
+    page, 1.67 stays on the page the last run switched to.
+    """
+    at.query_params.clear()
+    at.query_params["page"] = page
+    for key, value in query.items():
         at.query_params[key] = value
     return at.run()
 
@@ -544,15 +560,14 @@ def test_bad_site_page_uses_the_back_button():
 
 
 def test_ungaged_inputs_survive_a_trip_to_the_gaged_page():
-    at = _app_with({"page": "ungaged"})
-    at.number_input(key="ungaged_lat").set_value(46.87)
-    at.number_input(key="ungaged_lon").set_value(-113.99)
-    at.run()
+    # In the session before the first run rather than typed: under Streamlit 1.63 every
+    # AppTest run starts on the Flow Frequency page, which does not draw these inputs, so
+    # a typed value would be dropped before the Ungaged page could keep it.
+    at = _app_with({"page": "ungaged"}, state={"ungaged_lat": 46.87, "ungaged_lon": -113.99})
+    assert at.number_input(key="ungaged_lat").value == 46.87
     # Streamlit drops the state of widgets a run does not draw, as on the Gaged page.
-    at.sidebar.radio[0].set_value("Flow Frequency")
-    at.run()
-    at.sidebar.radio[0].set_value("Ungaged site")
-    at.run()
+    _open(at)
+    _open(at, "ungaged")
     assert not at.exception
     assert at.number_input(key="ungaged_lat").value == 46.87
     assert at.number_input(key="ungaged_lon").value == -113.99
@@ -596,20 +611,14 @@ def test_describe_error_shortens_web_failures_only(app_module):
     assert app_module.describe_error(ValueError("no peaks")) == "no peaks"
 
 
-def _page_radio(at):
-    return next(r for r in at.sidebar.radio if r.label == "Page")
-
-
 def _gage_box(at):
     return next(t for t in at.sidebar.text_input if t.label == "USGS Gage Number")
 
 
 def test_a_linked_site_survives_a_trip_to_the_ungaged_page():
     at = _app_with({"page": "gaged", "site": "12340500"})
-    _page_radio(at).set_value("Ungaged site")
-    at.run()
-    _page_radio(at).set_value("Flow Frequency")
-    at.run()
+    _open(at, "ungaged")
+    _open(at)
     assert not at.exception
     assert _gage_box(at).value == "12340500"
 
@@ -618,54 +627,95 @@ def test_a_typed_gage_number_survives_a_trip_to_the_ungaged_page():
     at = _app_with({})
     _gage_box(at).set_value("09380000")
     at.run()
-    _page_radio(at).set_value("Ungaged site")
-    at.run()
-    _page_radio(at).set_value("Flow Frequency")
-    at.run()
+    _open(at, "ungaged")
+    _open(at)
     assert not at.exception
     assert _gage_box(at).value == "09380000"
 
 
-def test_choosing_a_page_puts_it_in_the_url():
-    at = _app_with({"page": "gaged", "site": "12340500", "run": "1"})
-    _page_radio(at).set_value("Ungaged site")
-    at.run()
+def test_a_page_link_is_redirected_to_the_pages_own_address():
+    # ?page= is the older form of a link. The page's path replaces it, and parameters
+    # the page does not read (here the Flow Frequency page's site and run) are dropped.
+    at = _app_with({"page": "ungaged", "site": "12340500", "run": "1"})
     assert not at.exception
-    # AppTest gives a list on some Streamlit versions and a string on others.
-    assert at.query_params["page"] in ("ungaged", ["ungaged"])
-    assert "site" not in at.query_params and "run" not in at.query_params
-
-
-def test_a_link_to_a_page_moves_the_radio_after_a_hand_choice():
-    # The gage page's "Back to the map" sets ?page=ungaged after the radio was used.
-    at = _app_with({})
-    _page_radio(at).set_value("Ungaged site")
-    at.run()
-    _page_radio(at).set_value("Flow Frequency")
-    at.run()
-    at.query_params["page"] = "ungaged"
-    at.run()
-    assert not at.exception
-    assert _page_radio(at).value == "Ungaged site"
     assert any("Ungaged site" in h.value for h in at.header)
+    assert not dict(at.query_params)
 
 
-def test_back_from_a_gage_page_returns_to_the_ungaged_page(monkeypatch):
+def test_pages_are_chosen_from_the_navigation_menu_not_a_radio():
+    at = _app_with({})
+    assert not [r for r in at.sidebar.radio if r.label == "Page"]
+
+
+def test_a_gage_link_keeps_its_site_through_the_redirect(monkeypatch):
     import gage_ui
 
     monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: None)
-    at = _app_with({})
-    _page_radio(at).set_value("Ungaged site")
-    at.run()
-    at.query_params.clear()
-    at.query_params["page"] = "gage"  # a gage popup on the map ...
-    at.query_params["site"] = "12340500"
-    at.run()
-    at.query_params.clear()
-    at.query_params["page"] = "ungaged"  # ... and "Back to the map"
-    at.run()
+    at = _app_with({"page": "gage", "site": "12340500"})
     assert not at.exception
-    assert _page_radio(at).value == "Ungaged site"
+    # AppTest gives a list on some Streamlit versions and a string on others.
+    assert at.query_params["site"] in ("12340500", ["12340500"])
+    assert "page" not in at.query_params
+
+
+def test_the_gage_page_without_a_site_shows_the_gage_last_opened(monkeypatch):
+    # The browser's Back button returns to /gage without resending ?site=.
+    import gage_ui
+
+    calls = []
+    monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: calls.append(site))
+    at = _app_with({"page": "gage", "site": "12340500"})
+    _open(at, "gage")
+    assert not at.exception
+    assert calls == ["12340500", "12340500"]
+
+
+def test_the_gage_page_without_any_site_says_so(monkeypatch):
+    import gage_ui
+
+    calls = []
+    monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: calls.append(site))
+    at = _app_with({"page": "gage"})
+    assert not at.exception
+    assert not calls
+    assert any("not a valid" in e.value for e in at.error)
+
+
+def test_a_bad_site_is_not_replaced_by_the_gage_last_opened(monkeypatch):
+    import gage_ui
+
+    calls = []
+    monkeypatch.setattr(gage_ui, "render", lambda site, curve=None: calls.append(site))
+    at = _app_with({"page": "gage", "site": "12340500"})
+    _open(at, "gage", site="12")
+    assert calls == ["12340500"]
+    assert any("not a valid" in e.value for e in at.error)
+
+
+@pytest.mark.parametrize(
+    "params, current, target",
+    [
+        (
+            {"page": "ungaged", "lat": "36.1", "lon": "-88.2", "state": "TN", "site": "1"},
+            "flowfrequency",
+            ("ungaged", {"lat": "36.1", "lon": "-88.2", "state": "TN"}),
+        ),
+        # The gage page's Bulletin 17C link, should it resolve under /gage.
+        (
+            {"page": "flowfrequency", "site": "12340500", "run": "1"},
+            "gage",
+            ("flowfrequency", {"site": "12340500", "run": "1"}),
+        ),
+        ({"page": "gaged"}, "ungaged", ("flowfrequency", {})),  # the old name
+        ({"page": "gage", "site": "12340500"}, "ungaged", ("gage", {"site": "12340500"})),
+        ({"page": "gage", "site": "12340500"}, "gage", None),  # already there
+        ({"page": "gaged", "site": "12340500"}, "flowfrequency", None),
+        ({"page": "nope"}, "flowfrequency", None),
+        ({"site": "12340500"}, "gage", None),
+    ],
+)
+def test_link_target(app_module, params, current, target):
+    assert app_module.link_target(params, current) == target
 
 
 # ---------------------------------------------------------------------------
