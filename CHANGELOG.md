@@ -47,6 +47,18 @@ A delineated basin already zooms the map out to its whole extent. Two buttons no
 whenever a basin is shown: "Back to point" returns to the clicked point (or StreamStats' snapped pour point) at the
 zoom you clicked from, at least stream level, and "Whole basin" zooms out again.
 
+### Gage page: the fitted curve as a download, one request fewer, a year axis that stops at the record
+
+- **Fitted curve (CSV)** under the Bulletin 17C curve downloads the fit's quantile table (flow and its
+  90-percent confidence limits at each return interval, unrounded) as `<site>_b17c_curve.csv`. With the daily
+  values and annual peaks buttons already at the foot of the page, that is the three downloads the page listed
+  under "Coming to this page", so that note is gone.
+- The annual peaks no longer ask USGS for the monitoring-location record a second time: the page already has
+  the name, area and location from its own site lookup. A gage page view makes one request fewer.
+- The annual-peak chart's year axis runs from the year before the first peak to the year after the last. Left
+  to round itself it ran to the next round number, 2040 for a record that ends in 2025, with empty space to the
+  right of the bars. A record of a few years gets whole-year ticks only.
+
 ### Gage page: dams and impervious cover beside a change point
 
 - When the stationarity screen finds a change point, the gage page lists the dated basin changes
