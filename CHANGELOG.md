@@ -25,6 +25,17 @@ equations read, with each one's units and calibrated range, and runs flowfreq's 
 opens by default for Florida, Michigan and Nebraska, where StreamStats has no stream grid, and StreamStats' refusal
 there points to it. It needs flowfreq 0.26 and stays hidden on an older pin.
 
+### Ungaged page: says when StreamStats is not answering
+
+An outage or a refusal used to show only after **Delineate** or **Estimate** was pressed, as a failed request.
+The page now asks StreamStats one small question when it opens (the NSS region list: one request, one try, a
+4-second wait) and warns above the map when the answer is a refusal (HTTP 401, 403 or 429), an error, or none,
+saying which, when it was checked, and that the basin-characteristics form still works. The answer is kept for
+10 minutes for every session, so the check does not add to the load on a server that is turning this one away;
+a request of the page's own that goes the other way has the next run check again. The check reaches the host
+the pour-point snap and the NSS services are on, not the per-region delineation servers, so an outage of one
+of those alone still shows only when the request fails.
+
 ### Ungaged page: names the set the library chose
 
 Where sets overlap and the library picks one by a stated limit or preference, the page now names it,

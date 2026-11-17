@@ -41,6 +41,7 @@ from flowfreq.streamstats import (
 )
 from flowfreq.ungaged import SiteEstimate
 
+import streamstats_health
 import ungaged_curve
 from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
@@ -364,10 +365,12 @@ def run_estimate(
     except (ValueError, LookupError) as exc:
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
+        streamstats_health.note(False)
         return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    streamstats_health.note(True)
     return {"estimate": estimate}
 
 
@@ -402,10 +405,12 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
+        streamstats_health.note(False)
         return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("delineation failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    streamstats_health.note(True)
     if ws.polygon_geojson is None:
         return {"error": "StreamStats returned no watershed polygon here.", "kind": "input"}
     return {
@@ -1080,6 +1085,7 @@ def render(gage_fit: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
         "equations. The basin is delineated with StreamStats; the equations come from "
         "the flowfreq library."
     )
+    streamstats_health.show()
     codes = [j.code for j in JURISDICTIONS]
     for key in _KEPT:  # back from another page: restore what the widgets lost
         if key not in st.session_state and f"_{key}" in st.session_state:
