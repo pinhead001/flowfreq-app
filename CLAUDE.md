@@ -43,7 +43,7 @@ subdirectory** without also restoring that hack.
 ## The pinned dependency
 
 ```
-flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.26.0
+flowfreq @ git+https://github.com/pinhead001/flowfreq@v0.27.0
 ```
 
 A change in the library does not reach this app until that tag is bumped. When you need a
