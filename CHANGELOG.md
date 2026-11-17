@@ -19,6 +19,14 @@ there points to it. It needs flowfreq 0.26 and stays hidden on an older pin.
 Where sets overlap and the library picks one by a stated limit or preference, the page now names it,
 says why, and lists the sets not used. Before, this appeared only in the full report.
 
+### Gage page: an outage of the basin outline or the dam inventory is waited out once
+
+The stationarity screen looks for dams in the gage's basin: the outline from USGS NLDI, the dams from the
+National Inventory of Dams. When either could not be had, every rerun of the page (a slider, a tab) asked again
+and waited again, up to 60 seconds for NLDI and three tries at an 82 MB download for the inventory. A failure
+is now remembered for 5 minutes: the same note comes back at once, and says when the page tries again. The
+outline is remembered per gage, the inventory for every gage.
+
 ### Shorter network errors
 
 - A failed web request reads as one line naming the service -- "StreamStats request failed: 502 Bad Gateway from streamstats.usgs.gov", "could not connect to api.waterdata.usgs.gov" -- instead of quoting the whole URL with its query string. The full text goes to the log. Applies to the Ungaged page's Delineate and Estimate, and to the Flow Frequency page's regional-skew lookup, peak download and processing errors.
