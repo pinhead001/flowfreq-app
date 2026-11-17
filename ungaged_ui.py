@@ -23,7 +23,7 @@ import re
 import threading
 from collections import OrderedDict
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import pandas as pd
@@ -42,6 +42,7 @@ from flowfreq.streamstats import (
 from flowfreq.ungaged import SiteEstimate
 
 import streamstats_health
+import ungaged_curve
 from map_component import MODES, IdentityCache, basin_map
 from map_geo import state_at, states_touching
 from progress_ui import working
@@ -788,7 +789,9 @@ def _characteristics_form(state: Optional[str], current: Dict[str, Any]) -> None
             st.rerun()  # the status line, under the map, shows it
 
 
-def _show_estimate(estimate: SiteEstimate) -> None:
+def _show_estimate(
+    estimate: SiteEstimate, gage_fit: Optional[Callable[[str], Dict[str, Any]]] = None
+) -> None:
     if estimate.library_status == "nss_snapshot" or estimate.advisory:
         st.warning(
             estimate.advisory
@@ -803,6 +806,7 @@ def _show_estimate(estimate: SiteEstimate) -> None:
     if chosen:
         st.caption(chosen)
     st.dataframe(_quantile_frame(estimate), hide_index=True)
+    ungaged_curve.show(estimate, gage_fit)
     with st.expander("Full report"):
         st.markdown(estimate.to_markdown())
     st.download_button(
@@ -1067,8 +1071,14 @@ def _focus(to: str) -> None:
     st.session_state[FOCUS_KEY] = {"to": to, "n": int(previous.get("n", 0)) + 1}
 
 
-def render() -> None:
-    """Draw the ungaged-site page."""
+def render(gage_fit: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
+    """Draw the ungaged-site page.
+
+    ``gage_fit`` is the Flow Frequency page's default fit of a gage, by site number
+    (it never raises). With it, an estimate at a streamgage offers that gage's
+    Bulletin 17C curve over the regression's; without it the curve is the
+    regression's alone.
+    """
     st.header("Ungaged site: regional regression")
     st.markdown(
         "Estimate flood quantiles at a point from the published regional regression "
@@ -1209,7 +1219,7 @@ def render() -> None:
     inputs = result.get("inputs")
 
     if "estimate" in outcome:
-        _show_estimate(outcome["estimate"])
+        _show_estimate(outcome["estimate"], gage_fit)
     elif "basin" in outcome:
         area = outcome.get("area_sq_mi")
         size = f"{area:,.1f} sq mi" if area is not None else "area unknown"

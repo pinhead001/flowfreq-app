@@ -81,6 +81,8 @@ class _FakeGage:
 
     mode = "ok"
 
+    peak_site_metadata: list = []
+
     def __init__(self, site):
         self.site_no = site
         self.site_name = self.drainage_area = self.state_code = self.huc = None
@@ -94,7 +96,8 @@ class _FakeGage:
             # The library logs a failed request instead of raising it.
             self._last_api_error = "HTTPSConnectionPool(host='api.waterdata.usgs.gov'): Max retries"
 
-    def download_peak_flow(self):
+    def download_peak_flow(self, site_metadata=True):
+        _FakeGage.peak_site_metadata.append(site_metadata)
         if _FakeGage.mode == "down":
             raise ConnectionError("HTTPSConnectionPool(host='api.waterdata.usgs.gov'): Max retries")
         return PEAKS
@@ -113,6 +116,7 @@ def fake_gage(monkeypatch):
     monkeypatch.setattr(gage_ui, "download_daily", _fake_download_daily)
     gage_ui.clear_caches()
     _FakeGage.mode = "ok"
+    _FakeGage.peak_site_metadata = []
     yield _FakeGage
     gage_ui.clear_caches()
 
@@ -147,6 +151,12 @@ def test_a_failure_is_not_cached(fake_gage):
     assert len(gage_ui.load_daily(SITE)["daily"]) == 4
 
 
+def test_the_peaks_do_not_ask_for_the_site_record_again(fake_gage):
+    # load_site already has the name, area and location: one USGS request fewer a view.
+    assert "peaks" in gage_ui.load_peaks(SITE)
+    assert fake_gage.peak_site_metadata == [False]
+
+
 def test_an_unknown_site_says_so(fake_gage):
     fake_gage.mode = "empty"
     out = gage_ui.load_site(SITE)
@@ -163,6 +173,62 @@ def test_peak_chart_colours_bars_by_qualification():
     assert spec["encoding"]["color"]["field"] == "kind"
     kinds = {row["kind"] for row in spec["datasets"][next(iter(spec["datasets"]))]}
     assert "Historic (code 7)" in kinds and "No code" in kinds
+
+
+def test_peak_chart_year_axis_stops_at_the_record(fake_gage):
+    years = list(range(1884, 2026))  # 142 years: left to itself the axis ran to 2040
+    record = pd.DataFrame(
+        {
+            "water_year": years,
+            "peak_date": pd.to_datetime([f"{y}-06-01" for y in years]),
+            "peak_flow_cfs": [50000.0 + y for y in years],
+            "qualification_code": [""] * len(years),
+        }
+    )
+    x = gage_ui.peak_chart(record).to_dict()["encoding"]["x"]
+    assert x["scale"] == {"domain": [1883, 2026], "nice": False, "zero": False}
+    assert x["axis"]["tickMinStep"] == 1  # a short record has no half-year ticks
+    # The lines over the bars share that axis.
+    layered = gage_ui.peak_chart(record, change_year=1963, events=[("dam", 1963)]).to_dict()
+    assert layered["layer"][0]["encoding"]["x"]["scale"]["domain"] == [1883, 2026]
+    assert all("scale" not in layer["encoding"]["x"] for layer in layered["layer"][1:])
+
+
+def test_peak_chart_year_axis_ignores_years_without_a_flow():
+    record = PEAKS.copy()
+    record.loc[record.index[-1], "peak_flow_cfs"] = float("nan")
+    shown = record.dropna(subset=["peak_flow_cfs"])["water_year"]
+    x = gage_ui.peak_chart(record).to_dict()["encoding"]["x"]
+    assert x["scale"]["domain"] == [int(shown.min()) - 1, int(shown.max()) + 1]
+
+
+def test_curve_csv_is_the_fit_s_quantile_table_unrounded():
+    table = pd.DataFrame(
+        {
+            "Return Interval (yr)": [2.0, 100.0],
+            "Flow (cfs)": [8421.337, 30123.981],
+            "Lower 90% CI": [7500.25, 24000.5],
+            "Upper 90% CI": [9400.75, 41000.125],
+        }
+    )
+    text = gage_ui.curve_csv({"quantile_df": table, "error": None})
+    lines = text.splitlines()
+    assert lines[0] == "Return Interval (yr),Flow (cfs),Lower 90% CI,Upper 90% CI"
+    assert lines[2] == "100.0,30123.981,24000.5,41000.125"
+    assert len(lines) == 3
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"quantile_df": pd.DataFrame(), "error": "Not enough peaks"},
+        {"quantile_df": pd.DataFrame(), "error": None},
+        {"error": None},
+    ],
+)
+def test_curve_csv_refuses_a_fit_without_a_curve(result):
+    with pytest.raises(ValueError, match="no fitted curve"):
+        gage_ui.curve_csv(result)
 
 
 def _page():
@@ -990,7 +1056,9 @@ def fake_basin(monkeypatch):
     monkeypatch.setattr(gage_ui, "_fetch_basin", _with_clear(fake.fetch_basin))
     monkeypatch.setattr(gage_ui, "_fetch_impervious", _with_clear(fake.fetch_impervious))
     monkeypatch.setattr(gage_ui, "_nid", lambda: SimpleNamespace(dams=DAMS))
-    return fake
+    gage_ui.forget_failures()
+    yield fake
+    gage_ui.forget_failures()
 
 
 def test_basin_events_date_the_large_dams_in_the_basin():
@@ -1022,6 +1090,76 @@ def test_basin_events_without_the_nid_say_so(monkeypatch):
     out = gage_ui.load_basin_events(SITE)
     assert not out["dams_checked"] and out["events"] == []
     assert any("National Inventory of Dams" in n for n in out["notes"])
+
+
+def test_a_failed_basin_outline_is_not_asked_for_again_at_once(fake_basin, monkeypatch):
+    clock = [5000.0]
+    monkeypatch.setattr(gage_ui.time, "monotonic", lambda: clock[0])
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    first = gage_ui.load_basin_events(SITE)
+    fake_basin.basin = BASIN  # NLDI is back, but the page does not ask yet
+    clock[0] += gage_ui.FAILURE_TTL_S - 1
+    again = gage_ui.load_basin_events(SITE)
+    assert fake_basin.basin_calls == 1
+    assert again == first and not again["dams_checked"]
+    assert any("tried again 5 minutes after a failure" in n for n in again["notes"])
+    # Another gage is another question.
+    assert gage_ui.load_basin_events("01646500")["dams_checked"]
+    assert fake_basin.basin_calls == 2
+    clock[0] += 1  # five minutes on, it asks again
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert fake_basin.basin_calls == 3
+
+
+def test_a_gage_nldi_has_no_basin_for_is_not_asked_for_again_at_once(fake_basin):
+    fake_basin.basin = ValueError("NLDI returned no basin polygon for this gage")
+    first = gage_ui.load_basin_events(SITE)
+    assert gage_ui.load_basin_events(SITE) == first
+    assert fake_basin.basin_calls == 1
+    assert any("no basin polygon" in n for n in first["notes"])
+
+
+def test_a_failed_inventory_is_not_downloaded_again_at_once(monkeypatch):
+    calls = []
+
+    def nid():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("no network")
+        return SimpleNamespace(dams=DAMS)
+
+    clock = [5000.0]
+    monkeypatch.setattr(gage_ui.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(gage_ui, "_nid", nid)
+    first = gage_ui.load_basin_events(SITE)
+    assert not first["dams_checked"]
+    assert any("tried again 5 minutes after a failure" in n for n in first["notes"])
+    # The inventory is one download for every gage, so another gage does not retry it.
+    assert gage_ui.load_basin_events("01646500")["notes"] == first["notes"]
+    assert len(calls) == 1
+    clock[0] += gage_ui.FAILURE_TTL_S
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert len(calls) == 2
+
+
+def test_try_again_forgets_a_remembered_failure(fake_basin):
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    gage_ui.load_basin_events(SITE)
+    fake_basin.basin = BASIN
+    gage_ui.clear_caches()  # the page's "Try again" button
+    assert gage_ui.load_basin_events(SITE)["dams_checked"]
+    assert fake_basin.basin_calls == 2
+
+
+def test_a_remembered_failure_does_not_grow_its_traceback(fake_basin):
+    fake_basin.basin = requests.ConnectionError("host='api.water.usgs.gov'")
+    for _ in range(3):
+        gage_ui.load_basin_events(SITE)
+    ((_, kept),) = gage_ui._failures.values()
+    depth, tb = 0, kept.__traceback__
+    while tb is not None:
+        depth, tb = depth + 1, tb.tb_next
+    assert depth <= 2  # raised here and caught in load_basin_events, no more
 
 
 def test_basin_events_date_impervious_cover_crossing_the_urban_threshold():
