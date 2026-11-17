@@ -722,6 +722,30 @@ def test_fit_with_defaults_is_run_site_ffa_with_the_defaults(app_module, monkeyp
     assert seen == [app_module.DEFAULT_FIT_SETTINGS]
 
 
+def test_fit_gage_with_defaults_downloads_then_fits_as_the_gage_page_does(app_module, monkeypatch):
+    import gage_ui
+
+    peaks, seen = _plain_peaks(), []
+    monkeypatch.setattr(gage_ui, "load_peaks", lambda site_no: {"peaks": peaks})
+    monkeypatch.setattr(
+        gage_ui,
+        "fit_curve",
+        lambda site_no, frame, hooks: seen.append((site_no, frame, hooks)) or {"error": None},
+    )
+    assert app_module.fit_gage_with_defaults("03606500") == {"error": None}
+    assert seen == [("03606500", peaks, app_module.GAGE_PAGE_CURVE)]
+
+
+def test_fit_gage_with_defaults_reports_a_failed_download_as_a_failed_fit(app_module, monkeypatch):
+    import gage_ui
+
+    monkeypatch.setattr(gage_ui, "load_peaks", lambda site_no: {"error": "No peaks just now."})
+    monkeypatch.setattr(gage_ui, "fit_curve", lambda *a: pytest.fail("fitted without peaks"))
+    result = app_module.fit_gage_with_defaults("03606500")
+    assert result["error"] == "No peaks just now." and result["error_kind"] == "download"
+    assert result["quantile_df"].empty
+
+
 def test_fit_with_defaults_matches_the_flow_frequency_page_fit(app_module, monkeypatch):
     """Unmocked EMA: the gage page's fit is the Flow Frequency page's default fit."""
     _published_skew(app_module, monkeypatch)
@@ -842,6 +866,10 @@ def test_gage_page_draws_the_real_curve_in_place(app_module, monkeypatch):
     assert not at.exception
     assert not at.error
     assert at.get("image")
+    # The three downloads the page used to promise: the daily record, the peaks, the curve.
+    labels = [b.proto.label for b in at.get("download_button")]
+    assert {"Daily values (CSV)", "Annual peaks (CSV)", "Fitted curve (CSV)"} <= set(labels)
+    assert not any(e.label == "Coming to this page" for e in at.expander)
     assert any("Weighted Skew" in m.value for m in at.markdown)
 
 
