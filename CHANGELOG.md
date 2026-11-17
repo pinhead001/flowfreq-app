@@ -177,6 +177,20 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.27.0
+
+The pin moves from v0.26.0 to v0.27.0. Existing calls still work, but an estimate can change. What it brings the app:
+
+- **StreamStats region lookups are gentler**: an NSS `bylocation` call waits up to 200 seconds, is never retried
+  after a timeout, and runs one at a time. This is the fix USGS asked for after blocking an address (flowfreq issue
+  365), so an Estimate on a slow basin can take longer before it answers.
+- **Twelve more states average a basin spanning two regions in flow**, as their reports do (AZ, CA, CO, FL, GA, IA,
+  MT, NC, NJ, NV, NY, SC), so such an estimate rises a little. A Montana basin weighting the Northwest region with
+  the Northwest Foothills carries a caution in its advisory at AEPs of 4 percent and rarer.
+- The library gains `flowfreq.regression.border` (the border caution of app #52 needs it), `summarize_peaks` and
+  `record_years` (the gage page still uses its own copies), and report building (`flowfreq.reporting`), which the
+  app does not use.
+
 ### flowfreq v0.26.0
 
 The pin moves from v0.25.0 to v0.26.0. Existing calls still work, but an estimate can change. What it adds for the app:
