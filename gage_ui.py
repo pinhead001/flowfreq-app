@@ -22,6 +22,7 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -144,7 +145,9 @@ def _fetch_site(site_no: str) -> Dict[str, Any]:
 
 @st.cache_data(ttl=CACHE_TTL_S, show_spinner=False)
 def _fetch_peaks(site_no: str) -> Optional[pd.DataFrame]:
-    return USGSgage(site_no).download_peak_flow()
+    # The page takes the name, area and location from _fetch_site, so the peaks do
+    # not ask for the monitoring-location record a second time.
+    return USGSgage(site_no).download_peak_flow(site_metadata=False)
 
 
 #: Daily records kept at once: a century of daily values is about 0.6 MB.
@@ -167,6 +170,7 @@ def clear_caches() -> None:
     _cached_fit.clear()
     _fetch_basin.clear()
     _fetch_impervious.clear()
+    forget_failures()
 
 
 def load_site(site_no: str) -> Dict[str, Any]:
@@ -290,6 +294,10 @@ def peak_chart(
 ) -> alt.Chart:
     """Annual peaks as bars on a numeric water-year axis, so gaps in the record show.
 
+    The axis runs from the year before the first peak to the year after the last, and
+    no further: left to round itself, a long record's axis ran on to the next round
+    number (2040 for a record that ends in the 2020s).
+
     A ``change_year`` (from :func:`change_year`) draws a dashed line there, labelled.
     ``events`` (``(label, year)``, from :func:`load_basin_events`) draw dotted green
     lines, labelled in their tooltips; those outside the record's years are left off so
@@ -300,11 +308,17 @@ def peak_chart(
         qualification_code=lambda d: d["qualification_code"].astype("string").fillna(""),
     )
     data["kind"] = data["qualification_code"].map(peak_kind)
+    first, last = int(data["water_year"].min()), int(data["water_year"].max())
     bars = (
         alt.Chart(data)
         .mark_bar(size=3)
         .encode(
-            x=alt.X("water_year:Q", title="Water year", axis=alt.Axis(format="d")),
+            x=alt.X(
+                "water_year:Q",
+                title="Water year",
+                axis=alt.Axis(format="d", tickMinStep=1),
+                scale=alt.Scale(domain=[first - 1, last + 1], nice=False, zero=False),
+            ),
             y=alt.Y("peak_flow_cfs:Q", title="Peak flow (cfs)"),
             color=alt.Color(
                 "kind:N",
@@ -322,7 +336,6 @@ def peak_chart(
         .properties(height=260)
     )
     layers: List[Any] = [bars]
-    first, last = data["water_year"].min(), data["water_year"].max()
     shown = [(str(label), int(year)) for label, year in events if first <= year <= last]
     if shown:
         frame = pd.DataFrame(shown, columns=["event", "year"])
@@ -933,6 +946,29 @@ def peaks_csv(peaks: pd.DataFrame) -> str:
     return peaks.to_csv(index=False, date_format="%Y-%m-%d")
 
 
+def curve_csv(result: Dict[str, Any]) -> str:
+    """A fit's frequency curve as CSV: its quantile table, numbers unrounded.
+
+    Parameters
+    ----------
+    result : dict
+        A successful fit from :attr:`CurveHooks.fit`, with ``quantile_df``.
+
+    Returns
+    -------
+    str
+
+    Raises
+    ------
+    ValueError
+        The fit failed, or has no quantiles.
+    """
+    table = result.get("quantile_df")
+    if result.get("error") or table is None or table.empty:
+        raise ValueError("no fitted curve to write: the fit failed or has no quantiles")
+    return str(table.to_csv(index=False))
+
+
 #: Bar categories for the peak chart, with their colours. Codes are USGS peak
 #: qualification codes: 7 historic peak; 5 and 6 affected by regulation or diversion;
 #: C affected by urbanization or channelization.
@@ -1159,6 +1195,45 @@ IMPERVIOUS_KEY = "gage_impervious"
 IMPERVIOUS_REQUEST_KEY = "gage_impervious_request"
 
 
+#: How long a failed basin-outline or dam-inventory lookup stands before it is tried
+#: again, in seconds. Streamlit caches answers, not exceptions, so without this every
+#: rerun of the page (a slider, a tab) waited out the same outage again: up to 60 s for
+#: NLDI, and three tries at an 82 MB download for the inventory.
+FAILURE_TTL_S = 300
+
+_failures: Dict[Tuple[str, ...], Tuple[float, Exception]] = {}
+_failures_lock = threading.Lock()
+
+
+def _unless_just_failed(key: Tuple[str, ...], lookup: Callable[[], Any]) -> Any:
+    """``lookup()``, unless it failed under ``key`` within :data:`FAILURE_TTL_S`.
+
+    A failure is kept and raised again, unasked, until it is that old. A success is not
+    kept here: the lookups cache their own.
+    """
+    with _failures_lock:
+        kept = _failures.get(key)
+        if kept is not None and time.monotonic() < kept[0]:
+            raise kept[1].with_traceback(None)  # or every raise would lengthen it
+        _failures.pop(key, None)
+    try:
+        return lookup()
+    except Exception as exc:
+        with _failures_lock:
+            _failures[key] = (time.monotonic() + FAILURE_TTL_S, exc)
+        raise
+
+
+def forget_failures() -> None:
+    """Drop the remembered lookup failures, so the next view tries again."""
+    with _failures_lock:
+        _failures.clear()
+
+
+def _retry_note() -> str:
+    return f"It is tried again {FAILURE_TTL_S // 60} minutes after a failure."
+
+
 @st.cache_data(ttl=CACHE_TTL_S, max_entries=32, show_spinner=False)
 def _fetch_basin(site_no: str) -> Dict[str, Any]:
     response = requests.get(NLDI_BASIN_URL.format(site=site_no), params={"f": "json"}, timeout=60)
@@ -1198,6 +1273,9 @@ def load_basin_events(
     comes from ``impervious``, when the caller has it. Both go through
     :func:`flowfreq.stationarity.basin_change_events`.
 
+    A basin outline or an inventory that could not be had is not asked for again for
+    :data:`FAILURE_TTL_S`: the same note comes back at once.
+
     Parameters
     ----------
     site_no : str
@@ -1218,20 +1296,24 @@ def load_basin_events(
     geometry: Optional[Dict[str, Any]] = None
     nid: Any = None
     try:
-        geometry = _fetch_basin(site_no)
+        geometry = _unless_just_failed(("basin", site_no), lambda: _fetch_basin(site_no))
     except requests.RequestException as exc:
         notes.append(
-            f"Dams not checked: the basin outline (USGS NLDI) is unavailable ({network_message(exc)})."
+            "Dams not checked: the basin outline (USGS NLDI) is unavailable "
+            f"({network_message(exc)}). {_retry_note()}"
         )
     except Exception as exc:  # noqa: BLE001 - a missing basin is a note, never a traceback
         logger.warning("NLDI basin failed for %s: %s", site_no, exc)
         notes.append(f"Dams not checked: {exc}.")
     if geometry is not None:
         try:
-            nid = _nid()
+            nid = _unless_just_failed(("nid",), _nid)
         except Exception as exc:  # noqa: BLE001 - NIDUnavailableError, or anything else
             logger.warning("NID unavailable: %s", exc)
-            notes.append("Dams not checked: the National Inventory of Dams could not be loaded.")
+            notes.append(
+                "Dams not checked: the National Inventory of Dams could not be loaded. "
+                + _retry_note()
+            )
             geometry = None
     try:
         found = basin_change_events(
@@ -1595,6 +1677,13 @@ def curve_section(site_no: str, name: str, peaks: pd.DataFrame, hooks: CurveHook
         for heading, table in hooks.tables(result):
             st.markdown(heading)
             st.dataframe(table, use_container_width=True)
+    st.download_button(
+        "Fitted curve (CSV)",
+        curve_csv(result),
+        file_name=f"{site_no}_b17c_curve.csv",
+        mime="text/csv",
+        help="The curve as drawn: flow and its 90% confidence limits at each return interval.",
+    )
 
 
 def render(site_no: str, curve: Optional[CurveHooks] = None) -> None:
@@ -1659,5 +1748,3 @@ def render(site_no: str, curve: Optional[CurveHooks] = None) -> None:
 
     _actions(site_no, can_run="peaks" in peaks)
     _downloads(site_no, daily, peaks)
-    with st.expander("Coming to this page"):
-        st.markdown("- Direct data downloads of the peaks, the daily record and the fitted curve")

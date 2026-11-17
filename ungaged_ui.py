@@ -24,7 +24,7 @@ import re
 import threading
 from collections import OrderedDict
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 import pandas as pd
@@ -43,14 +43,21 @@ from flowfreq.streamstats import (
 from flowfreq.ungaged import SiteEstimate
 
 import app_nav
+import streamstats_health
+import ungaged_curve
 from map_component import MODES, IdentityCache, basin_map
-from map_geo import state_at, states_touching
+from map_geo import state_at, states_touching, states_within
 from progress_ui import working
 
 try:  # flowfreq 0.26: the regression from characteristics the user supplies
     from flowfreq import estimate_from_characteristics
 except ImportError:  # an older pin: the form stays hidden
     estimate_from_characteristics = None  # type: ignore[assignment]
+
+try:  # flowfreq 0.27: the borders where two states' equations differ systematically
+    from flowfreq.regression import BORDER_KM, border_offsets_between
+except ImportError:  # an older pin: no caution is shown
+    BORDER_KM, border_offsets_between = 20.0, None  # type: ignore[assignment]
 
 #: Jurisdictions StreamStats has no stream grid for: the form opens there by default.
 NO_STREAMSTATS = ("FL", "MI", "NE")
@@ -371,10 +378,12 @@ def run_estimate(
     except (ValueError, LookupError) as exc:
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
+        streamstats_health.note(False)
         return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("ungaged estimate failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    streamstats_health.note(True)
     return {"estimate": estimate}
 
 
@@ -409,10 +418,12 @@ def run_delineation(lat: float, lon: float, state: str) -> Dict[str, Any]:
     except ValueError as exc:  # unsnappable, regulated, degenerate, unsupported region
         return streamstats_refusal(exc, state) or {"error": str(exc), "kind": "input"}
     except requests.RequestException as exc:
+        streamstats_health.note(False)
         return {"error": streamstats_failure(exc), "kind": "network"}
     except Exception as exc:  # noqa: BLE001 - the page must show a failure, never a traceback
         logger.exception("delineation failed")
         return {"error": f"Unexpected {type(exc).__name__}: {exc}", "kind": "unexpected"}
+    streamstats_health.note(True)
     if ws.polygon_geojson is None:
         return {"error": "StreamStats returned no watershed polygon here.", "kind": "input"}
     return {
@@ -791,7 +802,54 @@ def _characteristics_form(state: Optional[str], current: Dict[str, Any]) -> None
             st.rerun()  # the status line, under the map, shows it
 
 
-def _show_estimate(estimate: SiteEstimate) -> None:
+def border_cautions(lat: float, lon: float, state: str) -> List[str]:
+    """What to say about an estimate near a border where two states' equations disagree.
+
+    The library measured, at gages near each state line, how far the neighbor's equations
+    run from the home state's on the same basins. Where that difference is systematic and
+    the point is within ``BORDER_KM`` of the other state, the reader should know. Nothing
+    is adjusted here or in the library.
+
+    Parameters
+    ----------
+    lat, lon : float
+        The point, decimal degrees WGS84.
+    state : str
+        The jurisdiction whose equations the estimate uses.
+
+    Returns
+    -------
+    list of str
+        One message per neighboring state with a systematic difference, nearest first.
+        Empty away from such a border, and with a flowfreq that does not have the table.
+    """
+    if border_offsets_between is None:
+        return []
+    messages = []
+    for other, km in states_within(lat, lon, BORDER_KM).items():
+        if other == state:
+            continue
+        offsets = border_offsets_between(state, other)
+        if not offsets:
+            continue
+        if km == 0:
+            where = f"This point is in {_state_name(other)}"
+        elif km < 1:
+            where = f"This point is less than 1 km from {_state_name(other)}"
+        else:
+            where = f"This point is about {km:.0f} km from {_state_name(other)}"
+        messages.append(
+            f"{where}, and the two states' equations differ systematically along this border. "
+            + " ".join(offset.describe() for offset in offsets)
+            + f" This estimate uses the {_state_name(state)} equations as published: "
+            "nothing is adjusted."
+        )
+    return messages
+
+
+def _show_estimate(
+    estimate: SiteEstimate, gage_fit: Optional[Callable[[str], Dict[str, Any]]] = None
+) -> None:
     if estimate.library_status == "nss_snapshot" or estimate.advisory:
         st.warning(
             estimate.advisory
@@ -800,12 +858,15 @@ def _show_estimate(estimate: SiteEstimate) -> None:
     extrapolated = extrapolation_warning(estimate)
     if extrapolated:
         st.warning(extrapolated)
+    for caution in border_cautions(estimate.lat, estimate.lon, estimate.state):
+        st.warning(caution)
     st.subheader(f"Estimate at {estimate.lat:.4f}, {estimate.lon:.4f} ({estimate.state})")
     st.caption(f"Method: {estimate.method}. Equation library: {estimate.library_status}.")
     chosen = chosen_set_caption(estimate)
     if chosen:
         st.caption(chosen)
     st.dataframe(_quantile_frame(estimate), hide_index=True)
+    ungaged_curve.show(estimate, gage_fit)
     with st.expander("Full report"):
         st.markdown(estimate.to_markdown())
     st.download_button(
@@ -1143,14 +1204,21 @@ def _focus(to: str) -> None:
     st.session_state[FOCUS_KEY] = {"to": to, "n": int(previous.get("n", 0)) + 1}
 
 
-def render() -> None:
-    """Draw the ungaged-site page."""
+def render(gage_fit: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
+    """Draw the ungaged-site page.
+
+    ``gage_fit`` is the Flow Frequency page's default fit of a gage, by site number
+    (it never raises). With it, an estimate at a streamgage offers that gage's
+    Bulletin 17C curve over the regression's; without it the curve is the
+    regression's alone.
+    """
     st.header("Ungaged site: regional regression")
     st.markdown(
         "Estimate flood quantiles at a point from the published regional regression "
         "equations. The basin is delineated with StreamStats; the equations come from "
         "the flowfreq library."
     )
+    streamstats_health.show()
     codes = [j.code for j in JURISDICTIONS]
     for key in _KEPT:  # back from another page: restore what the widgets lost
         if key not in st.session_state and f"_{key}" in st.session_state:
@@ -1305,7 +1373,7 @@ def render() -> None:
     inputs = result.get("inputs")
 
     if "estimate" in outcome:
-        _show_estimate(outcome["estimate"])
+        _show_estimate(outcome["estimate"], gage_fit)
     elif "basin" in outcome:
         area = outcome.get("area_sq_mi")
         size = f"{area:,.1f} sq mi" if area is not None else "area unknown"

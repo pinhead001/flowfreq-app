@@ -1114,3 +1114,91 @@ def test_run_estimate_network_error_is_short(monkeypatch):
         ),
         "kind": "network",
     }
+
+
+# --- A caution near a border where two states' equations disagree ---------------------
+
+
+class _Offset:
+    def __init__(self, text):
+        self.text = text
+
+    def describe(self):
+        return self.text
+
+
+def _offsets_between(pairs):
+    """A stand-in for ``flowfreq.regression.border_offsets_between`` over ``pairs``."""
+
+    def between(state, other):
+        found = []
+        for key in ((state, other), (other, state)):
+            if key in pairs:
+                found.append(_Offset(pairs[key]))
+        return tuple(found)
+
+    return between
+
+
+def test_border_caution_names_the_neighbor_the_distance_and_the_difference(monkeypatch):
+    monkeypatch.setattr(
+        ungaged_ui, "border_offsets_between", _offsets_between({("MT", "WY"): "Measured."})
+    )
+    # 0.1 degrees of latitude north of the Montana-Wyoming line.
+    assert ungaged_ui.border_cautions(45.1, -108.0, "MT") == [
+        "This point is about 11 km from Wyoming, and the two states' equations differ "
+        "systematically along this border. Measured. This estimate uses the Montana "
+        "equations as published: nothing is adjusted."
+    ]
+
+
+def test_border_caution_gives_both_directions_of_a_pair(monkeypatch):
+    pairs = {("MT", "WY"): "At Montana gages.", ("WY", "MT"): "At Wyoming gages."}
+    monkeypatch.setattr(ungaged_ui, "border_offsets_between", _offsets_between(pairs))
+    (caution,) = ungaged_ui.border_cautions(45.05, -108.0, "MT")
+    assert "At Montana gages. At Wyoming gages." in caution
+
+
+def test_border_caution_for_a_point_inside_the_other_state(monkeypatch):
+    # Wyoming's equations asked for at a point in Montana.
+    monkeypatch.setattr(
+        ungaged_ui, "border_offsets_between", _offsets_between({("MT", "WY"): "Measured."})
+    )
+    (caution,) = ungaged_ui.border_cautions(45.05, -108.0, "WY")
+    assert caution.startswith("This point is in Montana, and")
+    assert "uses the Wyoming equations" in caution
+
+
+def test_no_border_caution_away_from_the_border_or_without_a_systematic_pair(monkeypatch):
+    monkeypatch.setattr(
+        ungaged_ui, "border_offsets_between", _offsets_between({("MT", "WY"): "Measured."})
+    )
+    assert ungaged_ui.border_cautions(46.87, -113.99, "MT") == []  # Missoula: Idaho is 35 km off
+    monkeypatch.setattr(ungaged_ui, "border_offsets_between", _offsets_between({}))
+    assert ungaged_ui.border_cautions(45.05, -108.0, "MT") == []
+
+
+def test_no_border_caution_when_the_library_has_no_table(monkeypatch):
+    # A flowfreq pin older than 0.27: the import fell back to None.
+    monkeypatch.setattr(ungaged_ui, "border_offsets_between", None)
+    assert ungaged_ui.border_cautions(45.05, -108.0, "MT") == []
+
+
+def test_the_estimate_shows_the_border_caution(monkeypatch, recorders):
+    monkeypatch.setattr(
+        ungaged_ui, "border_offsets_between", _offsets_between({("MT", "WY"): "Measured."})
+    )
+    estimate = _estimate_with_basin(None)
+    estimate.lat, estimate.lon = 45.05, -108.0
+    at, _ = _seeded_matching(monkeypatch, {"estimate": estimate})
+    assert not at.exception
+    assert [w.value for w in at.warning if "Measured." in w.value]
+
+
+def test_the_estimate_shows_no_caution_without_one(monkeypatch, recorders):
+    monkeypatch.setattr(ungaged_ui, "border_offsets_between", _offsets_between({}))
+    estimate = _estimate_with_basin(None)
+    estimate.lat, estimate.lon = 45.05, -108.0
+    at, _ = _seeded_matching(monkeypatch, {"estimate": estimate})
+    assert not at.exception
+    assert not [w.value for w in at.warning if "differ systematically" in w.value]

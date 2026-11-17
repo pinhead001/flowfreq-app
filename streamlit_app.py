@@ -174,8 +174,8 @@ def fitted_skew(params: Dict[str, Any]) -> float:
 def _ffa_error(message: str, kind: str = "fit") -> Dict[str, Any]:
     """A run_ffa-shaped result carrying only an error.
 
-    ``error_kind`` is ``"skew"``, ``"regulated"`` or ``"fit"``, so the display
-    can say what the user can do about it.
+    ``error_kind`` is ``"skew"``, ``"regulated"``, ``"fit"`` or ``"download"`` (the
+    peaks never arrived), so the display can say what the user can do about it.
     """
     return {
         "b17c": None,
@@ -306,6 +306,18 @@ def fit_with_defaults(site_no: str, peak_df: pd.DataFrame) -> Dict[str, Any]:
     Never raises, as :func:`run_site_ffa`.
     """
     return run_site_ffa(site_no, peak_df, **DEFAULT_FIT_SETTINGS)
+
+
+def fit_gage_with_defaults(site_no: str) -> Dict[str, Any]:
+    """A gage's peaks, downloaded and fitted as the gage page does: the ungaged page's
+    overlay. Both steps are the gage page's cached ones.
+
+    Never raises; a failed download comes back under ``error`` as a failed fit does.
+    """
+    loaded = gage_ui.load_peaks(site_no)
+    if "error" in loaded:
+        return _ffa_error(loaded["error"], kind="download")
+    return gage_ui.fit_curve(site_no, loaded["peaks"], GAGE_PAGE_CURVE)
 
 
 def frequency_figure(
@@ -572,7 +584,7 @@ def _flow_frequency_page() -> None:
 
 
 def _ungaged_page() -> None:
-    ungaged_ui.render()
+    ungaged_ui.render(gage_fit=fit_gage_with_defaults)
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**flowfreq** v{__version__}")
 

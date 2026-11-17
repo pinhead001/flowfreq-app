@@ -78,3 +78,29 @@ def test_geojson_hash_is_12_hex_and_stable():
     moved = copy.deepcopy(a)
     moved["geometry"]["coordinates"][0][1][0] = -107.8
     assert map_geo.geojson_hash(moved) != h
+
+
+# --- How far a point is from the states around it ------------------------------------
+
+
+def test_states_within_gives_the_points_own_state_and_its_near_neighbors():
+    # Just east of the Four Corners, in Colorado: Utah's line is 0.045 degrees west.
+    near = map_geo.states_within(37.05, -109.0, 20)
+    assert list(near) == ["CO", "UT", "NM", "AZ"]  # nearest first
+    assert near["CO"] == 0.0
+    assert near["UT"] == pytest.approx(4.0, abs=0.5)
+
+
+def test_states_within_measures_to_the_outline():
+    # Half a degree of latitude north of the Kansas-Oklahoma line on the 37th parallel.
+    assert map_geo.states_within(37.5, -100.0, 60)["OK"] == pytest.approx(55.6, abs=1.0)
+    assert list(map_geo.states_within(37.5, -100.0, 50)) == ["KS"]
+
+
+def test_states_within_is_empty_at_sea():
+    assert map_geo.states_within(30.0, -40.0, 20) == {}
+
+
+def test_states_within_rejects_a_negative_distance():
+    with pytest.raises(ValueError, match="km must be 0 or more"):
+        map_geo.states_within(37.5, -100.0, -1)
