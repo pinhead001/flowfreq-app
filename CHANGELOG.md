@@ -226,6 +226,13 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.27.1
+
+The pin moves from v0.27.0 to v0.27.1. Estimate and Delineate wait up to 200 seconds for StreamStats to delineate a
+basin and to compute its characteristics, and no longer send either request again after a timeout. A large basin
+that used to fail after three 60-second tries now answers on the first, or fails once after 200 seconds. This
+finishes the change USGS asked for in flowfreq issue 365.
+
 ### flowfreq v0.27.0
 
 The pin moves from v0.26.0 to v0.27.0. Existing calls still work, but an estimate can change. What it brings the app:
