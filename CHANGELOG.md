@@ -226,6 +226,19 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.28.0
+
+The pin moves from v0.27.1 to v0.28.0. What reaches the app without a change here:
+
+- Alabama, Mississippi and Tennessee gain the 2026 urban equations as a region, `Urban 2026`.
+- The caution shown near a state border comes from the finished border comparison: 15 pairs of states, not 17.
+- A StreamStats request that makes the server compute is sent once, never again after a failure, in every path.
+- A peak or daily download that stops short is an error and no longer a short record.
+- An estimate whose regression regions cover only part of the basin carries a caution saying how much.
+- A dropped connection to the Water Data API is retried.
+
+Nothing in the app uses the new report sections, record extension or `allow_inaccurate` yet.
+
 ### flowfreq v0.27.1
 
 The pin moves from v0.27.0 to v0.27.1. Estimate and Delineate wait up to 200 seconds for StreamStats to delineate a
