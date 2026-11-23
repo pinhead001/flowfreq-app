@@ -226,6 +226,11 @@ when StreamStats refuses for a reason that is the point, the basin or the state:
 The library's own message is kept as the outcome's `detail`. Uses flowfreq v0.20.0's
 `RegionNotDelineatedError` and `RegulatedDelineationError`.
 
+### flowfreq v0.28.1
+
+The pin moves from v0.28.0 to v0.28.1. The release corrects baseflow separation only (the HYSEP windows, and
+baseflow interpolated across a long gap). The app computes no baseflow, so nothing it shows changes.
+
 ### flowfreq v0.28.0
 
 The pin moves from v0.27.1 to v0.28.0. What reaches the app without a change here:
