@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### flowfreq v0.29.0
+
+The pin moves from v0.28.1 to v0.29.0. What the app shows can change on the ungaged page only:
+
+- In Maryland a basin over two regions is averaged in flow, weighted by area, not in logarithms, so its estimate
+  changes.
+- In Georgia and the Carolinas a basin split between SIR 2014-5030's small-basin regions is counted as covered in
+  full where it was undercounted.
+
+v0.29.0 also changes low flows (n-day periods that cross April 1 are no longer used) and removes `flowfreq.engine`,
+`flowfreq.batch` and `flowfreq.plots`; the app uses none of these. The rest of the release (Bulletin 17B on request,
+new report sections, ice events, regional sets used only when named) adds things the app does not call.
+
 ### Ungaged page: the estimate as a frequency curve, with a gage's fit over it
 
 An estimate is now drawn as well as tabulated: flow on a log axis against annual exceedance probability on a
